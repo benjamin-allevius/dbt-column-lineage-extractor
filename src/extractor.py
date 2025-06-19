@@ -1,12 +1,15 @@
 import warnings
-from sqlglot.lineage import lineage, maybe_parse, SqlglotError, exp
-from . import utils
-import re
+
 import sqlglot
+from sqlglot.lineage import SqlglotError, exp, lineage
+
+from . import utils
 
 
 class DbtColumnLineageExtractor:
-    def __init__(self, manifest_path, catalog_path, selected_models=[], dialect="snowflake"):
+    def __init__(
+        self, manifest_path, catalog_path, selected_models=[], dialect="snowflake"
+    ):
         # Set up logging
         self.logger = utils.setup_logging()
 
@@ -72,7 +75,8 @@ class DbtColumnLineageExtractor:
 
         # If selectors is already a list of model names without any special syntax, return as is
         if all(
-            selector in self.manifest["nodes"] or selector in self.manifest.get("sources", {})
+            selector in self.manifest["nodes"]
+            or selector in self.manifest.get("sources", {})
             for selector in selectors
         ):
             return selectors
@@ -127,9 +131,9 @@ class DbtColumnLineageExtractor:
             # Handle both ancestors and descendants: +model_name+
             elif selector_expr.startswith("+") and selector_expr.endswith("+"):
                 model_name = selector_expr[1:-1]
-                if model_name in self.manifest["nodes"] or model_name in self.manifest.get(
-                    "sources", {}
-                ):
+                if model_name in self.manifest[
+                    "nodes"
+                ] or model_name in self.manifest.get("sources", {}):
                     expanded_models.add(model_name)
                     expanded_models.update(self._get_all_ancestors(model_name))
                     expanded_models.update(self._get_all_descendants(model_name))
@@ -144,9 +148,9 @@ class DbtColumnLineageExtractor:
             # Handle ancestors (upstream/parents): +model_name
             elif selector_expr.startswith("+"):
                 model_name = selector_expr[1:]
-                if model_name in self.manifest["nodes"] or model_name in self.manifest.get(
-                    "sources", {}
-                ):
+                if model_name in self.manifest[
+                    "nodes"
+                ] or model_name in self.manifest.get("sources", {}):
                     expanded_models.add(model_name)
                     expanded_models.update(self._get_all_ancestors(model_name))
                 else:
@@ -159,9 +163,9 @@ class DbtColumnLineageExtractor:
             # Handle descendants (downstream/children): model_name+
             elif selector_expr.endswith("+"):
                 model_name = selector_expr[:-1]
-                if model_name in self.manifest["nodes"] or model_name in self.manifest.get(
-                    "sources", {}
-                ):
+                if model_name in self.manifest[
+                    "nodes"
+                ] or model_name in self.manifest.get("sources", {}):
                     expanded_models.add(model_name)
                     expanded_models.update(self._get_all_descendants(model_name))
                 else:
@@ -172,9 +176,9 @@ class DbtColumnLineageExtractor:
                         expanded_models.update(self._get_all_descendants(match))
 
             # Handle direct node reference
-            elif selector_expr in self.manifest["nodes"] or selector_expr in self.manifest.get(
-                "sources", {}
-            ):
+            elif selector_expr in self.manifest[
+                "nodes"
+            ] or selector_expr in self.manifest.get("sources", {}):
                 expanded_models.add(selector_expr)
 
             # Handle source reference
@@ -189,7 +193,9 @@ class DbtColumnLineageExtractor:
                 expanded_models.update(matching_nodes)
 
             # exclude sources after expansion
-            expanded_models = [x for x in expanded_models if not x.startswith("source.")]
+            expanded_models = [
+                x for x in expanded_models if not x.startswith("source.")
+            ]
 
         return list(expanded_models)
 
@@ -217,7 +223,9 @@ class DbtColumnLineageExtractor:
 
         # Check nodes (models, etc.)
         for node_name, node_info in self.manifest["nodes"].items():
-            if node_info.get("resource_type") == "model" and tag in node_info.get("tags", []):
+            if node_info.get("resource_type") == "model" and tag in node_info.get(
+                "tags", []
+            ):
                 matching_models.append(node_name)
 
         # Also check sources
@@ -234,7 +242,9 @@ class DbtColumnLineageExtractor:
 
         # Check nodes (models, etc.)
         for node_name, node_info in self.manifest["nodes"].items():
-            if node_info.get("resource_type") == "model" and path in node_info.get("path", ""):
+            if node_info.get("resource_type") == "model" and path in node_info.get(
+                "path", ""
+            ):
                 matching_models.append(node_name)
 
         # Also check sources
@@ -327,7 +337,11 @@ class DbtColumnLineageExtractor:
 
         def add_to_schema_dict(node):
             dbt_node = DBTNodeCatalog(node)
-            db_name, schema_name, table_name = dbt_node.database, dbt_node.schema, dbt_node.name
+            db_name, schema_name, table_name = (
+                dbt_node.database,
+                dbt_node.schema,
+                dbt_node.name,
+            )
 
             if db_name not in schema_dict:
                 schema_dict[db_name] = {}
@@ -336,7 +350,9 @@ class DbtColumnLineageExtractor:
             if table_name not in schema_dict[db_name][schema_name]:
                 schema_dict[db_name][schema_name][table_name] = {}
 
-            schema_dict[db_name][schema_name][table_name].update(dbt_node.get_column_types())
+            schema_dict[db_name][schema_name][table_name].update(
+                dbt_node.get_column_types()
+            )
 
         for node in catalog.get("nodes", {}).values():
             add_to_schema_dict(node)
@@ -370,7 +386,9 @@ class DbtColumnLineageExtractor:
         elif node in self.catalog["sources"]:
             columns = self.catalog["sources"][node]["columns"]
         else:
-            warnings.warn(f"Node {node} not found in catalog, maybe it's not materialized")
+            warnings.warn(
+                f"Node {node} not found in catalog, maybe it's not materialized"
+            )
             return []
         return [col.lower() for col in list(columns.keys())]
 
@@ -386,7 +404,9 @@ class DbtColumnLineageExtractor:
                 warnings.warn(f"Parent model {parent} not found in catalog")
         return parent_catalog
 
-    def _extract_lineage_for_model(self, model_sql, schema, model_node, selected_columns=[]):
+    def _extract_lineage_for_model(
+        self, model_sql, schema, model_node, selected_columns=[]
+    ):
         lineage_map = {}
 
         # Get columns if none provided
@@ -404,10 +424,14 @@ class DbtColumnLineageExtractor:
 
         for column_name in selected_columns:
             try:
-                lineage_node = lineage(column_name, model_sql, schema=schema, dialect=self.dialect)
+                lineage_node = lineage(
+                    column_name, model_sql, schema=schema, dialect=self.dialect
+                )
                 lineage_map[column_name] = lineage_node
             except SqlglotError as e:
-                self.logger.error(f"Error processing model {model_node}, column {column_name}: {e}")
+                self.logger.error(
+                    f"Error processing model {model_node}, column {column_name}: {e}"
+                )
                 lineage_map[column_name] = []
             except Exception as e:
                 self.logger.error(
@@ -429,7 +453,9 @@ class DbtColumnLineageExtractor:
                 continue
 
             processed_count += 1
-            self.logger.info(f"{processed_count}/{total_models} Processing model {model_node}")
+            self.logger.info(
+                f"{processed_count}/{total_models} Processing model {model_node}"
+            )
 
             try:
                 if model_info["path"].endswith(".py"):
@@ -444,7 +470,9 @@ class DbtColumnLineageExtractor:
                     continue
 
                 if "compiled_code" not in model_info or not model_info["compiled_code"]:
-                    self.logger.info(f"Skipping {model_node} as it has no compiled SQL code")
+                    self.logger.info(
+                        f"Skipping {model_node} as it has no compiled SQL code"
+                    )
                     continue
 
                 parent_catalog = self._get_parent_nodes_catalog(model_info)
@@ -463,7 +491,7 @@ class DbtColumnLineageExtractor:
             except Exception as e:
                 error_count += 1
                 self.logger.error(f"Error processing model {model_node}: {str(e)}")
-                self.logger.info(f"Continuing with next model...")
+                self.logger.info("Continuing with next model...")
                 continue
 
         if error_count > 0:
@@ -488,7 +516,9 @@ class DbtColumnLineageExtractor:
 
         return {"column": column_name, "dbt_node": dbt_node}
 
-    def get_columns_lineage_from_sqlglot_lineage_map(self, lineage_map, picked_columns=[]):
+    def get_columns_lineage_from_sqlglot_lineage_map(
+        self, lineage_map, picked_columns=[]
+    ):
         columns_lineage = {}
         # Initialize all selected models before accessing them
         for model in self.selected_models:
@@ -517,9 +547,12 @@ class DbtColumnLineageExtractor:
                         parent_columns = self.get_dbt_node_from_sqlglot_table_node(n)
                         if (
                             parent_columns["dbt_node"] != model_node
-                            and parent_columns not in columns_lineage[model_node_lower][column]
+                            and parent_columns
+                            not in columns_lineage[model_node_lower][column]
                         ):
-                            columns_lineage[model_node_lower][column].append(parent_columns)
+                            columns_lineage[model_node_lower][column].append(
+                                parent_columns
+                            )
 
                 if not columns_lineage[model_node_lower][column]:
                     warnings.warn(f"No lineage found for {model_node} - {column}")
@@ -624,8 +657,10 @@ class DbtColumnLineageExtractor:
                 visited.add((related_model, related_column))
 
                 # Recursively get the structure for each related node
-                subsequent_structure = DbtColumnLineageExtractor.find_all_related_with_structure(
-                    lineage_map, related_model, related_column, visited
+                subsequent_structure = (
+                    DbtColumnLineageExtractor.find_all_related_with_structure(
+                        lineage_map, related_model, related_column, visited
+                    )
                 )
 
                 # Use a structure to show relationships distinctly
@@ -633,7 +668,9 @@ class DbtColumnLineageExtractor:
                     related_structure[related_model] = {}
 
                 # Add information about the column lineage
-                related_structure[related_model][related_column] = {"+": subsequent_structure}
+                related_structure[related_model][related_column] = {
+                    "+": subsequent_structure
+                }
 
         return related_structure
 
@@ -654,7 +691,9 @@ class DBTNodeCatalog:
         return f"{self.database}.{self.schema}.{self.name}".lower()
 
     def get_column_types(self):
-        return {col_name: col_info["type"] for col_name, col_info in self.columns.items()}
+        return {
+            col_name: col_info["type"] for col_name, col_info in self.columns.items()
+        }
 
 
 class DBTNodeManifest:

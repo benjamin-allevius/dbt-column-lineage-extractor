@@ -1,6 +1,7 @@
 import argparse
-import dbt_column_lineage_extractor.utils as utils
-from dbt_column_lineage_extractor import DbtColumnLineageExtractor
+
+from . import utils
+from .extractor import DbtColumnLineageExtractor
 
 
 def main():
@@ -73,18 +74,22 @@ def main():
             dialect=args.dialect,
         )
 
-        logger.info(f"Processing {len(extractor.selected_models)} models after selector expansion")
+        logger.info(
+            f"Processing {len(extractor.selected_models)} models after selector expansion"
+        )
 
         try:
             lineage_map = extractor.build_lineage_map()
 
             if not lineage_map:
-                logger.warning("Warning: No valid lineage was generated. Check for errors above.")
+                logger.warning(
+                    "Warning: No valid lineage was generated. Check for errors above."
+                )
                 if not args.continue_on_error:
                     return 1
 
-            lineage_to_direct_parents = extractor.get_columns_lineage_from_sqlglot_lineage_map(
-                lineage_map
+            lineage_to_direct_parents = (
+                extractor.get_columns_lineage_from_sqlglot_lineage_map(lineage_map)
             )
             lineage_to_direct_children = (
                 extractor.get_lineage_to_direct_children_from_lineage_to_direct_parents(
@@ -93,14 +98,18 @@ def main():
             )
 
             utils.write_dict_to_file(
-                lineage_to_direct_parents, f"{args.output_dir}/lineage_to_direct_parents.json"
+                lineage_to_direct_parents,
+                f"{args.output_dir}/lineage_to_direct_parents.json",
             )
 
             utils.write_dict_to_file(
-                lineage_to_direct_children, f"{args.output_dir}/lineage_to_direct_children.json"
+                lineage_to_direct_children,
+                f"{args.output_dir}/lineage_to_direct_children.json",
             )
 
-            logger.info("Lineage extraction complete. Output files written to output directory.")
+            logger.info(
+                "Lineage extraction complete. Output files written to output directory."
+            )
             return 0
 
         except Exception as e:

@@ -1,15 +1,17 @@
 import argparse
-import os
 import json
+import os
 import webbrowser
-from pathlib import Path
-import dbt_column_lineage_extractor.utils as utils
-from dbt_column_lineage_extractor import DbtColumnLineageExtractor
-from dbt_column_lineage_extractor.visualization import create_html_viewer, convert_to_mermaid
+
+from src import utils
+from src.extractor import DbtColumnLineageExtractor
+from src.visualization import convert_to_mermaid, create_html_viewer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Recursive DBT Column Lineage Extractor CLI")
+    parser = argparse.ArgumentParser(
+        description="Recursive DBT Column Lineage Extractor CLI"
+    )
     parser.add_argument(
         "--model",
         required=True,
@@ -61,8 +63,12 @@ def main():
 
         # Read lineage data from files
         try:
-            lineage_to_direct_parents = utils.read_dict_from_file(args.lineage_parents_file)
-            lineage_to_direct_children = utils.read_dict_from_file(args.lineage_children_file)
+            lineage_to_direct_parents = utils.read_dict_from_file(
+                args.lineage_parents_file
+            )
+            lineage_to_direct_children = utils.read_dict_from_file(
+                args.lineage_children_file
+            )
         except FileNotFoundError as e:
             logger.error(f"Error: Could not find required lineage file: {e}")
             logger.info(
@@ -78,7 +84,9 @@ def main():
             logger.info(
                 f"   dbt_column_lineage_direct --manifest path/to/manifest.json --catalog path/to/catalog.json --model +{args.model}+"
             )
-            logger.info("\nAfter running one of these commands, try this command again.")
+            logger.info(
+                "\nAfter running one of these commands, try this command again."
+            )
             return 1
         except json.JSONDecodeError as e:
             logger.error(f"Error: Invalid JSON in lineage file: {e}")
@@ -116,8 +124,12 @@ def main():
                     logger.info(f"Using model: {model_node}")
             else:
                 # Fall back to substring matching to find potential matches
-                parent_matches = utils.find_potential_matches(lineage_to_direct_parents, model_node)
-                child_matches = utils.find_potential_matches(lineage_to_direct_children, model_node)
+                parent_matches = utils.find_potential_matches(
+                    lineage_to_direct_parents, model_node
+                )
+                child_matches = utils.find_potential_matches(
+                    lineage_to_direct_children, model_node
+                )
 
                 # Combine unique matches
                 all_matches = list(set(parent_matches + child_matches))
@@ -150,8 +162,10 @@ def main():
         ancestors_squashed = DbtColumnLineageExtractor.find_all_related(
             lineage_to_direct_parents, model_node, args.column
         )
-        ancestors_structured = DbtColumnLineageExtractor.find_all_related_with_structure(
-            lineage_to_direct_parents, model_node, args.column
+        ancestors_structured = (
+            DbtColumnLineageExtractor.find_all_related_with_structure(
+                lineage_to_direct_parents, model_node, args.column
+            )
         )
 
         if args.show_details:
@@ -166,8 +180,10 @@ def main():
         descendants_squashed = DbtColumnLineageExtractor.find_all_related(
             lineage_to_direct_children, model_node, args.column
         )
-        descendants_structured = DbtColumnLineageExtractor.find_all_related_with_structure(
-            lineage_to_direct_children, model_node, args.column
+        descendants_structured = (
+            DbtColumnLineageExtractor.find_all_related_with_structure(
+                lineage_to_direct_children, model_node, args.column
+            )
         )
 
         if args.show_details:
@@ -175,12 +191,14 @@ def main():
             utils.pretty_print_dict(descendants_squashed)
             logger.info("---structured descendants---")
             utils.pretty_print_dict(descendants_structured)
-            
+
         # Check if no lineage information was found
         if not ancestors_structured and not descendants_structured:
-            logger.warning(f"No lineage found for column '{args.column}' in model '{model_node}'. Skipping output generation.")
+            logger.warning(
+                f"No lineage found for column '{args.column}' in model '{model_node}'. Skipping output generation."
+            )
             return 0
-            
+
         # Save outputs based on format
         if args.output_format in ["json", "both"]:
             # Create safe filenames by replacing dots with underscores
@@ -199,7 +217,9 @@ def main():
             utils.write_dict_to_file(descendants_structured, descendants_file)
 
             logger.info("========================================")
-            logger.info(f"Lineage outputs saved to {ancestors_file} and {descendants_file}")
+            logger.info(
+                f"Lineage outputs saved to {ancestors_file} and {descendants_file}"
+            )
 
         if args.output_format in ["mermaid", "both"]:
             # Convert to Mermaid format
@@ -208,7 +228,9 @@ def main():
             )
 
             # Save Mermaid output
-            mermaid_file = os.path.join(args.output_dir, f"{model_node}_{args.column}_lineage.mmd")
+            mermaid_file = os.path.join(
+                args.output_dir, f"{model_node}_{args.column}_lineage.mmd"
+            )
             with open(mermaid_file, "w") as f:
                 f.write(mermaid_output)
 
