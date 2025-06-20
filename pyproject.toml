@@ -22,13 +22,13 @@ dependencies = [
 dbt_column_lineage_direct = "dbt_column_lineage_extractor.cli_direct:main"
 dbt_column_lineage_recursive = "dbt_column_lineage_extractor.cli_recursive:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.4.1",
-]
-
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+]
