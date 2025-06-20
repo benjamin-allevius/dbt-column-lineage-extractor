@@ -106,7 +106,7 @@ def test_pretty_print_dict(capsys):
 def test_clear_screen(mock_system):
     """Test the clear screen function."""
     # Import the function locally to avoid early execution
-    from src.utils import clear_screen
+    from src.dbt_column_lineage_extractor.utils import clear_screen
 
     # Call the function
     clear_screen()

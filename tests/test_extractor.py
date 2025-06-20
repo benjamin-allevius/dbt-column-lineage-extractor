@@ -152,7 +152,7 @@ def test_get_parent_nodes_catalog():
     assert parent_count > 0
 
 
-@patch("src.extractor.lineage")
+@patch("src.dbt_column_lineage_extractor.extractor.lineage")
 def test_extract_lineage_for_model(mock_lineage):
     """Test extracting lineage for a model."""
     # Mock the lineage function to return a predictable result
@@ -227,7 +227,7 @@ def test_extract_lineage_with_real_data():
     assert any(lineage for lineage in lineage_map.values())
 
 
-@patch("src.extractor.lineage")
+@patch("src.dbt_column_lineage_extractor.extractor.lineage")
 def test_extract_lineage_error_handling(mock_lineage):
     """Test error handling during lineage extraction."""
     # Mock the lineage function to raise an error
@@ -569,7 +569,7 @@ def test_python_model_handling():
     catalog = {"nodes": {}, "sources": {}}
 
     # Patch the read_json method to return our mock manifest and catalog
-    with patch("src.utils.read_json") as mock_read_json:
+    with patch("src.dbt_column_lineage_extractor.utils.read_json") as mock_read_json:
         mock_read_json.side_effect = [manifest, catalog]
 
         with patch.object(
@@ -620,7 +620,7 @@ def test_non_model_resource_handling():
     catalog = {"nodes": {}, "sources": {}}
 
     # Patch the read_json method to return our mock manifest and catalog
-    with patch("src.utils.read_json") as mock_read_json:
+    with patch("src.dbt_column_lineage_extractor.utils.read_json") as mock_read_json:
         mock_read_json.side_effect = [manifest, catalog]
 
         with patch.object(

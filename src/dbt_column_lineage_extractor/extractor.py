@@ -368,8 +368,10 @@ class DbtColumnLineageExtractor:
             # Only include model, source, and seed nodes
             if node.get("resource_type") in ["model", "source", "seed"]:
                 try:
-                    dbt_node = DBTNodeManifest(node)
-                    mapping[dbt_node.full_table_name] = key
+                    # Only process nodes that have the required fields
+                    if "database" in node and "schema" in node and "name" in node:
+                        dbt_node = DBTNodeManifest(node)
+                        mapping[dbt_node.full_table_name] = key
                 except Exception as e:
                     warnings.warn(f"Error processing node {key}: {e}")
         for key, node in self.manifest["sources"].items():
@@ -500,12 +502,31 @@ class DbtColumnLineageExtractor:
             )
         return lineage_map
 
-    def get_dbt_node_from_sqlglot_table_node(self, node):
-        if node.source.key != "table":
-            raise ValueError(f"Node source is not a table, but {node.source.key}")
-        column_name = node.name.split(".")[-1].lower()
-        table_name = f"{node.source.catalog}.{node.source.db}.{node.source.name}"
+    def get_dbt_node_from_sqlglot_table_node(self, table_node, root_lineage_node=None):
+        if table_node.source.key != "table":
+            raise ValueError(f"Node source is not a table, but {table_node.source.key}")
+
+        table_name = f"{table_node.source.catalog}.{table_node.source.db}.{table_node.source.name}"
         table_name = table_name.lower()
+
+        # Try to extract full struct field path from root lineage node
+        column_name = None
+        if root_lineage_node and hasattr(root_lineage_node, "expression"):
+            column_name = self._extract_full_column_path_from_expression(
+                root_lineage_node.expression, table_node.source.name
+            )
+
+        # Fallback to extracting from table node name if we couldn't get it from expression
+        if not column_name:
+            # Handle struct field access: table_node.name format is "table_name.column_path"
+            # We need to extract just the column_path part
+            source_table_name = table_node.source.name.lower()
+            if table_node.name.lower().startswith(source_table_name + "."):
+                # Extract column path after the table name
+                column_name = table_node.name[len(source_table_name) + 1 :].lower()
+            else:
+                # Fallback to original logic for non-struct fields
+                column_name = table_node.name.split(".")[-1].lower()
 
         if table_name in self.node_mapping:
             dbt_node = self.node_mapping[table_name].lower()
@@ -515,6 +536,53 @@ class DbtColumnLineageExtractor:
             # raise ValueError(f"Table {table_name} not found in node mapping")
 
         return {"column": column_name, "dbt_node": dbt_node}
+
+    def _extract_full_column_path_from_expression(self, expression, table_name):
+        """
+        Extract the full column path (e.g., 'address.city') from a sqlglot expression.
+
+        This handles struct field access by parsing Dot expressions and reconstructing
+        the full dotted path while removing the table name prefix.
+        """
+
+        try:
+            # Handle Alias expressions (SELECT address.city AS city)
+            if isinstance(expression, exp.Alias) and hasattr(expression, "this"):
+                expression = expression.this
+
+            # Handle Dot expressions (address.city)
+            if isinstance(expression, exp.Dot):
+                # Build the full path by walking up the dot chain
+                path_parts = []
+                current = expression
+
+                while isinstance(current, exp.Dot):
+                    # Add the rightmost part first
+                    if hasattr(current, "expression"):
+                        path_parts.insert(0, str(current.expression))
+                    current = current.this
+
+                # Handle the leftmost part
+                if isinstance(current, exp.Column):
+                    # Extract just the column name, removing table reference
+                    if hasattr(current, "this"):
+                        path_parts.insert(0, str(current.this))
+                elif hasattr(current, "name"):
+                    # Remove table name prefix if present
+                    name = str(current.name)
+                    if name.lower().startswith(table_name.lower() + "."):
+                        name = name[len(table_name) + 1 :]
+                    path_parts.insert(0, name)
+
+                # Join the parts to create the full column path
+                if path_parts:
+                    return ".".join(path_parts).lower()
+
+        except Exception as e:
+            # If we can't extract the path, fall back to None
+            warnings.warn(f"Error extracting column path from expression: {e}")
+
+        return None
 
     def get_columns_lineage_from_sqlglot_lineage_map(
         self, lineage_map, picked_columns=[]
@@ -544,7 +612,9 @@ class DbtColumnLineageExtractor:
                 # Process nodes with a walk method
                 for n in node.walk():
                     if n.source.key == "table":
-                        parent_columns = self.get_dbt_node_from_sqlglot_table_node(n)
+                        parent_columns = self.get_dbt_node_from_sqlglot_table_node(
+                            n, node
+                        )
                         if (
                             parent_columns["dbt_node"] != model_node
                             and parent_columns
@@ -698,10 +768,20 @@ class DBTNodeCatalog:
 
 class DBTNodeManifest:
     def __init__(self, node_data):
-        self.database = node_data["database"]
-        self.schema = node_data["schema"]
-        self.name = node_data["name"]
-        self.columns = node_data["columns"]
+        # Handle both manifest and catalog structures
+        if "metadata" in node_data:
+            # Catalog structure
+            self.database = node_data["metadata"]["database"]
+            self.schema = node_data["metadata"]["schema"]
+            self.name = node_data["metadata"]["name"]
+        else:
+            # Manifest structure
+            self.database = node_data["database"]
+            self.schema = node_data["schema"]
+            self.name = node_data["name"]
+
+        # Columns might not be present in manifest nodes
+        self.columns = node_data.get("columns", {})
 
     @property
     def full_table_name(self):
