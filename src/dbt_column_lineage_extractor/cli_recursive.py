@@ -3,9 +3,9 @@ import json
 import os
 import webbrowser
 
-from src import utils
-from src.extractor import DbtColumnLineageExtractor
-from src.visualization import convert_to_mermaid, create_html_viewer
+from . import utils
+from .extractor import DbtColumnLineageExtractor
+from .visualization import convert_to_mermaid, create_html_viewer
 
 
 def main():

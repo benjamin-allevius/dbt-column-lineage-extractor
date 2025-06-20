@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "dbt-column-lineage-extractor"
-version = "0.1.7b2"
+version = "0.2.0"
 description = "A package for extracting dbt column lineage"
 readme = "readme.md"
 requires-python = ">=3.12"
@@ -22,3 +26,9 @@ dbt_column_lineage_recursive = "dbt_column_lineage_extractor.cli_recursive:main"
 dev = [
     "pytest>=8.4.1",
 ]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,16 +1,12 @@
 import pytest
-import os
-import json
-from dbt_column_lineage_extractor import DbtColumnLineageExtractor
-from unittest.mock import patch, MagicMock
+
+from src.dbt_column_lineage_extractor.extractor import DbtColumnLineageExtractor
 
 
 @pytest.fixture
 def mock_catalog():
-    return {
-        "nodes": {},
-        "sources": {}
-    }
+    return {"nodes": {}, "sources": {}}
+
 
 class TestSelectors:
     """Tests for the dbt-style selector functionality."""
@@ -22,16 +18,16 @@ class TestSelectors:
             manifest_path="tests/test_data/inputs/manifest.json",
             catalog_path="tests/test_data/inputs/catalog.json",
             selected_models=[],
-            dialect="snowflake"
+            dialect="snowflake",
         )
-    
+
     @pytest.fixture
     def model_info(self, extractor):
         """Extract key information about the test models for verification."""
         # This will help us understand the test data structure
         models = {}
         sources = {}
-        
+
         # Get all models
         for node_id, node in extractor.manifest["nodes"].items():
             if node.get("resource_type") == "model":
@@ -41,16 +37,16 @@ class TestSelectors:
                     "package": node.get("package_name", ""),
                     "path": node.get("path", ""),
                     "parents": extractor.parent_map.get(node_id, []),
-                    "children": extractor.child_map.get(node_id, [])
+                    "children": extractor.child_map.get(node_id, []),
                 }
-        
+
         # Get sources
         for node_id, node in extractor.manifest.get("sources", {}).items():
             sources[node_id] = {
                 "name": node.get("name"),
-                "package": node.get("package_name", "")
+                "package": node.get("package_name", ""),
             }
-            
+
         return {"models": models, "sources": sources}
 
     def test_all_models_selection(self, extractor):
@@ -64,10 +60,10 @@ class TestSelectors:
         """Test selecting a specific model."""
         # Get a model ID from the available models
         model_id = list(model_info["models"].keys())[0]
-        
+
         # Select just that model
         extractor.selected_models = extractor._parse_selectors([model_id])
-        
+
         assert len(extractor.selected_models) == 1
         assert model_id in extractor.selected_models
 
@@ -76,16 +72,17 @@ class TestSelectors:
         # Get a model name from the available models
         model_id = list(model_info["models"].keys())[0]
         model_name = model_info["models"][model_id]["name"]
-        
+
         # Select by just the name without the full ID
         extractor.selected_models = extractor._parse_selectors([model_name])
-        
+
         # Find all models with this name (could be more than one)
         expected_models = [
-            node_id for node_id, info in model_info["models"].items()
+            node_id
+            for node_id, info in model_info["models"].items()
             if info["name"] == model_name
         ]
-        
+
         # Verify all expected models are selected
         assert len(extractor.selected_models) >= 1
         for model in expected_models:
@@ -99,16 +96,19 @@ class TestSelectors:
                 # Select this model and all its ancestors
                 selector = f"+{info['name']}"
                 extractor.selected_models = extractor._parse_selectors([selector])
-                
+
                 # Verify the model itself is selected
-                assert any(node_id in extractor.selected_models for node_id, node_info in model_info["models"].items() 
-                           if node_info["name"] == info["name"])
-                
+                assert any(
+                    node_id in extractor.selected_models
+                    for node_id, node_info in model_info["models"].items()
+                    if node_info["name"] == info["name"]
+                )
+
                 # Verify at least one parent is included
                 for parent in info["parents"]:
                     if parent in model_info["models"]:  # Only check model parents
                         assert parent in extractor.selected_models
-                
+
                 # Only need to test one model
                 break
 
@@ -120,16 +120,19 @@ class TestSelectors:
                 # Select this model and all its descendants
                 selector = f"{info['name']}+"
                 extractor.selected_models = extractor._parse_selectors([selector])
-                
+
                 # Verify the model itself is selected
-                assert any(node_id in extractor.selected_models for node_id, node_info in model_info["models"].items() 
-                           if node_info["name"] == info["name"])
-                
+                assert any(
+                    node_id in extractor.selected_models
+                    for node_id, node_info in model_info["models"].items()
+                    if node_info["name"] == info["name"]
+                )
+
                 # Verify at least one child is included
                 for child in info["children"]:
                     if child in model_info["models"]:  # Only check model children
                         assert child in extractor.selected_models
-                
+
                 # Only need to test one model
                 break
 
@@ -139,18 +142,19 @@ class TestSelectors:
         all_tags = set()
         for info in model_info["models"].values():
             all_tags.update(info.get("tags", []))
-        
+
         if all_tags:
             # Select a tag
             tag = list(all_tags)[0]
             extractor.selected_models = extractor._parse_selectors([f"tag:{tag}"])
-            
+
             # Find models that should be selected
             expected_models = [
-                node_id for node_id, info in model_info["models"].items()
+                node_id
+                for node_id, info in model_info["models"].items()
                 if tag in info.get("tags", [])
             ]
-            
+
             # Verify selected models match expected
             assert len(extractor.selected_models) == len(expected_models)
             for model in expected_models:
@@ -166,18 +170,21 @@ class TestSelectors:
                 path_parts = info.get("path", "").split("/")
                 if len(path_parts) > 1:
                     path_elements.add(path_parts[0])
-        
+
         if path_elements:
             # Select a path
             path_element = list(path_elements)[0]
-            extractor.selected_models = extractor._parse_selectors([f"path:{path_element}"])
-            
+            extractor.selected_models = extractor._parse_selectors(
+                [f"path:{path_element}"]
+            )
+
             # Find models that should be selected
             expected_models = [
-                node_id for node_id, info in model_info["models"].items()
+                node_id
+                for node_id, info in model_info["models"].items()
                 if path_element in info.get("path", "")
             ]
-            
+
             # Verify at least some models are selected
             assert len(extractor.selected_models) > 0
             # Verify all selected models contain the path element
@@ -191,18 +198,21 @@ class TestSelectors:
         for info in model_info["models"].values():
             if info.get("package"):
                 packages.add(info["package"])
-        
+
         if packages:
             # Select a package
             package = list(packages)[0]
-            extractor.selected_models = extractor._parse_selectors([f"package:{package}"])
-            
+            extractor.selected_models = extractor._parse_selectors(
+                [f"package:{package}"]
+            )
+
             # Find models that should be selected
             expected_models = [
-                node_id for node_id, info in model_info["models"].items()
+                node_id
+                for node_id, info in model_info["models"].items()
                 if info.get("package") == package
             ]
-            
+
             # Verify selected models match expected
             assert len(extractor.selected_models) == len(expected_models)
             for model in expected_models:
@@ -217,18 +227,19 @@ class TestSelectors:
                 model_names.append(info["name"])
                 if len(model_names) >= 2:
                     break
-        
+
         if len(model_names) >= 2:
             # Select both models
             selector = f"{model_names[0]} {model_names[1]}"
             extractor.selected_models = extractor._parse_selectors([selector])
-            
+
             # Find all models with either name
             expected_models = [
-                node_id for node_id, info in model_info["models"].items()
+                node_id
+                for node_id, info in model_info["models"].items()
                 if info["name"] in model_names
             ]
-            
+
             # Verify all expected models are selected
             assert len(extractor.selected_models) >= 2
             for model in expected_models:
@@ -243,7 +254,7 @@ class TestSelectors:
                 if tag not in tag_to_models:
                     tag_to_models[tag] = []
                 tag_to_models[tag].append(node_id)
-        
+
         common_tags = []
         common_models = []
         for tag1, models1 in tag_to_models.items():
@@ -256,12 +267,12 @@ class TestSelectors:
                         break
             if common_tags:
                 break
-        
+
         if common_tags:
             # Select models with both tags
             selector = f"tag:{common_tags[0]},tag:{common_tags[1]}"
             extractor.selected_models = extractor._parse_selectors([selector])
-            
+
             # Verify correct models are selected
             assert len(extractor.selected_models) == len(common_models)
             for model in common_models:
@@ -276,23 +287,24 @@ class TestSelectors:
             all_tags.update(info.get("tags", []))
             if info.get("package"):
                 packages.add(info["package"])
-        
+
         if all_tags and packages:
             tag = list(all_tags)[0]
             package = list(packages)[0]
-            
+
             # Select models that are either:
             # 1. In the selected package, or
             # 2. Tagged with the selected tag
             selector = f"package:{package} tag:{tag}"
             extractor.selected_models = extractor._parse_selectors([selector])
-            
+
             # Find models that should be selected
             expected_models = [
-                node_id for node_id, info in model_info["models"].items()
+                node_id
+                for node_id, info in model_info["models"].items()
                 if info.get("package") == package or tag in info.get("tags", [])
             ]
-            
+
             # Verify all expected models are selected
             assert len(extractor.selected_models) == len(expected_models)
             for model in expected_models:
@@ -312,22 +324,26 @@ class TestSelectors:
         """Test selecting ancestors of a leaf node (no ancestors)."""
         # Find a model with no parents
         leaf_models = [
-            node_id for node_id, info in model_info["models"].items()
-            if not info["parents"] or all(parent not in model_info["models"] for parent in info["parents"])
+            node_id
+            for node_id, info in model_info["models"].items()
+            if not info["parents"]
+            or all(parent not in model_info["models"] for parent in info["parents"])
         ]
-        
+
         if leaf_models:
             leaf_model = leaf_models[0]
             leaf_name = model_info["models"][leaf_model]["name"]
-            
+
             # Select ancestors of a leaf node
             extractor.selected_models = extractor._parse_selectors([f"+{leaf_name}"])
-            
+
             # Should only include the leaf itself since it has no ancestors
             assert len(extractor.selected_models) >= 1
-            assert any(model_info["models"][model]["name"] == leaf_name 
-                       for model in extractor.selected_models)
-            
+            assert any(
+                model_info["models"][model]["name"] == leaf_name
+                for model in extractor.selected_models
+            )
+
             # Verify no unexpected models are included
             for model in extractor.selected_models:
                 if model_info["models"][model]["name"] != leaf_name:
@@ -337,22 +353,26 @@ class TestSelectors:
         """Test selecting descendants of a leaf node (no descendants)."""
         # Find a model with no children
         leaf_models = [
-            node_id for node_id, info in model_info["models"].items()
-            if not info["children"] or all(child not in model_info["models"] for child in info["children"])
+            node_id
+            for node_id, info in model_info["models"].items()
+            if not info["children"]
+            or all(child not in model_info["models"] for child in info["children"])
         ]
-        
+
         if leaf_models:
             leaf_model = leaf_models[0]
             leaf_name = model_info["models"][leaf_model]["name"]
-            
+
             # Select descendants of a leaf node
             extractor.selected_models = extractor._parse_selectors([f"{leaf_name}+"])
-            
+
             # Should only include the leaf itself since it has no descendants
             assert len(extractor.selected_models) >= 1
-            assert any(model_info["models"][model]["name"] == leaf_name 
-                       for model in extractor.selected_models)
-            
+            assert any(
+                model_info["models"][model]["name"] == leaf_name
+                for model in extractor.selected_models
+            )
+
             # Verify no unexpected models are included
             for model in extractor.selected_models:
                 if model_info["models"][model]["name"] != leaf_name:
@@ -364,34 +384,41 @@ class TestSelectors:
         for model_id, info in model_info["models"].items():
             if info["children"]:
                 for child in info["children"]:
-                    if child in model_info["models"] and model_info["models"][child]["children"]:
+                    if (
+                        child in model_info["models"]
+                        and model_info["models"][child]["children"]
+                    ):
                         # We've found a model with at least a child and grandchild
                         model_name = info["name"]
-                        
+
                         # Get all descendants
-                        extractor.selected_models = extractor._parse_selectors([f"{model_name}+"])
-                        
+                        extractor.selected_models = extractor._parse_selectors(
+                            [f"{model_name}+"]
+                        )
+
                         # Get expected models: the model itself and all its descendants that are models
                         expected_models = {model_id}
-                        
+
                         # Find child models
                         child_models = set()
                         for child in info["children"]:
                             if child in model_info["models"]:
                                 child_models.add(child)
                                 # Find grandchild models
-                                for grandchild in model_info["models"][child]["children"]:
+                                for grandchild in model_info["models"][child][
+                                    "children"
+                                ]:
                                     if grandchild in model_info["models"]:
                                         child_models.add(grandchild)
-                        
+
                         expected_models.update(child_models)
-                        
+
                         # Verify we have the expected number of models
                         assert len(extractor.selected_models) == len(expected_models)
-                        
+
                         # Verify model itself is included
                         assert model_id in extractor.selected_models
-                        
+
                         # Verify at least one child is included
                         child_included = False
                         for child in info["children"]:
@@ -399,10 +426,10 @@ class TestSelectors:
                                 child_included = True
                                 break
                         assert child_included
-                        
+
                         # Only test one case
                         return
-        
+
         # Skip test if no suitable model found
         pytest.skip("No model with both child and grandchild found in test data")
 
@@ -411,7 +438,7 @@ class TestSelectors:
         # Find a model with descendants and a common tag among them
         tag_counts = {}
         model_tags = {}
-        
+
         # Count tag occurrences across models
         for node_id, info in model_info["models"].items():
             for tag in info.get("tags", []):
@@ -420,31 +447,31 @@ class TestSelectors:
                     model_tags[tag] = []
                 tag_counts[tag] += 1
                 model_tags[tag].append(node_id)
-        
+
         # Find a common tag (used by multiple models)
         common_tags = [tag for tag, count in tag_counts.items() if count > 1]
-        
+
         if common_tags:
             tag = common_tags[0]
             tagged_models = model_tags[tag]
-            
+
             # Find a model with descendants
             for model_id in tagged_models:
                 if model_info["models"][model_id]["children"]:
                     model_name = model_info["models"][model_id]["name"]
-                    
+
                     # Get models that are both descendants of this model and have the tag
                     selector = f"{model_name}+,tag:{tag}"
                     extractor.selected_models = extractor._parse_selectors([selector])
-                    
+
                     # Verify results - should include models with tag that are descendants
                     for selected in extractor.selected_models:
                         # Should have the tag
                         assert tag in model_info["models"][selected]["tags"]
-                        
+
                         # Should test only one case
                         return
-        
+
         # Skip test if no suitable model found
         pytest.skip("No model with tagged descendants found in test data")
 
@@ -452,39 +479,47 @@ class TestSelectors:
         """Test complex nested union and intersection operators."""
         # This test is complex and requires specific data patterns
         # We'll make a simpler version based on the available test data
-        
+
         # Find two tags
         all_tags = set()
         for info in model_info["models"].values():
             all_tags.update(info.get("tags", []))
-        
+
         if len(all_tags) >= 2:
             tags = list(all_tags)[:2]
-            
+
             # Create a complex selector: models with tag1 OR (models with tag2 AND ancestors of some model)
             # Find a model with ancestors first
             for model_id, info in model_info["models"].items():
                 if info["parents"]:
                     model_name = info["name"]
                     selector = f"tag:{tags[0]} tag:{tags[1]},+{model_name}"
-                    
+
                     # Run the selection
                     extractor.selected_models = extractor._parse_selectors([selector])
-                    
+
                     # Verify we got some results
                     assert len(extractor.selected_models) > 0
-                    
-                    # We can't easily predict the exact expected models, but we can verify 
+
+                    # We can't easily predict the exact expected models, but we can verify
                     # that each model has either tag1 or both tag2 and is an ancestor of our model
                     for selected in extractor.selected_models:
-                        has_tag1 = tags[0] in model_info["models"][selected].get("tags", [])
-                        has_tag2 = tags[1] in model_info["models"][selected].get("tags", [])
-                        is_ancestor_or_self = selected == model_id or selected in info["parents"]
-                        
+                        has_tag1 = tags[0] in model_info["models"][selected].get(
+                            "tags", []
+                        )
+                        has_tag2 = tags[1] in model_info["models"][selected].get(
+                            "tags", []
+                        )
+                        is_ancestor_or_self = (
+                            selected == model_id or selected in info["parents"]
+                        )
+
                         assert has_tag1 or (has_tag2 and is_ancestor_or_self)
-                    
+
                     # Only test one case
                     return
-        
+
         # Skip test if no suitable model found
-        pytest.skip("Test data doesn't have the required structure for complex selection") 
+        pytest.skip(
+            "Test data doesn't have the required structure for complex selection"
+        )
