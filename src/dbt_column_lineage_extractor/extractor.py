@@ -1,4 +1,5 @@
 import warnings
+from typing import Dict, Optional
 
 import sqlglot
 from sqlglot.lineage import SqlglotError, exp, lineage
@@ -849,6 +850,170 @@ class DbtColumnLineageExtractor:
                 }
 
         return related_structure
+
+
+class EnhancedDBTNodeCatalog:
+    """Enhanced DBT node catalog with improved type system integration."""
+
+    def __init__(self, node_data):
+        # Handle cases where metadata might be missing
+        if "metadata" not in node_data:
+            raise ValueError(f"Node data missing metadata field: {node_data}")
+
+        self.database = node_data["metadata"]["database"]
+        self.schema = node_data["metadata"]["schema"]
+        self.name = node_data["metadata"]["name"]
+        self.columns = node_data["columns"]
+
+        # Cache parsed types for performance
+        self._parsed_types_cache = {}
+
+    @property
+    def full_table_name(self):
+        return f"{self.database}.{self.schema}.{self.name}".lower()
+
+    def get_column_types(self):
+        """Get column types as strings (backward compatibility)."""
+        return {
+            col_name: col_info["type"] for col_name, col_info in self.columns.items()
+        }
+
+    def get_parsed_column_type(
+        self, column_name: str, dialect: str = "snowflake"
+    ) -> Optional[exp.DataType]:
+        """Parse column type string into SQLGlot DataType object."""
+        if column_name not in self.columns:
+            return None
+
+        # Use cache to avoid re-parsing
+        cache_key = (column_name, dialect)
+        if cache_key in self._parsed_types_cache:
+            return self._parsed_types_cache[cache_key]
+
+        type_string = self.columns[column_name]["type"]
+        try:
+            # Parse type string using SQLGlot's type parser
+            parsed_type = sqlglot.parse_one(
+                f"SELECT CAST(NULL AS {type_string})", dialect=dialect
+            )
+            if parsed_type and parsed_type.find(exp.DataType):
+                data_type = parsed_type.find(exp.DataType)
+                self._parsed_types_cache[cache_key] = data_type
+                return data_type
+        except Exception as e:
+            warnings.warn(
+                f"Failed to parse type '{type_string}' for column '{column_name}': {e}"
+            )
+
+        self._parsed_types_cache[cache_key] = None
+        return None
+
+    def is_struct_column(self, column_name: str, dialect: str = "snowflake") -> bool:
+        """Check if a column is a struct/object type."""
+        parsed_type = self.get_parsed_column_type(column_name, dialect)
+        if not parsed_type:
+            # Fallback to string-based detection
+            type_string = self.columns.get(column_name, {}).get("type", "").upper()
+            return any(
+                keyword in type_string for keyword in ["STRUCT", "OBJECT", "ROW"]
+            )
+
+        return parsed_type.is_type("struct", "object", "row")
+
+    def is_array_column(self, column_name: str, dialect: str = "snowflake") -> bool:
+        """Check if a column is an array type."""
+        parsed_type = self.get_parsed_column_type(column_name, dialect)
+        if not parsed_type:
+            # Fallback to string-based detection
+            type_string = self.columns.get(column_name, {}).get("type", "").upper()
+            return "ARRAY" in type_string or type_string.endswith("[]")
+
+        return parsed_type.is_type("array")
+
+    def is_json_column(self, column_name: str, dialect: str = "snowflake") -> bool:
+        """Check if a column is a JSON type."""
+        parsed_type = self.get_parsed_column_type(column_name, dialect)
+        if not parsed_type:
+            # Fallback to string-based detection
+            type_string = self.columns.get(column_name, {}).get("type", "").upper()
+            return any(
+                keyword in type_string for keyword in ["JSON", "JSONB", "VARIANT"]
+            )
+
+        return parsed_type.is_type("json", "jsonb", "variant")
+
+    def get_struct_fields(
+        self, column_name: str, dialect: str = "snowflake"
+    ) -> Dict[str, str]:
+        """Extract struct field names and types if available."""
+        parsed_type = self.get_parsed_column_type(column_name, dialect)
+        if not parsed_type or not self.is_struct_column(column_name, dialect):
+            return {}
+
+        fields = {}
+        if hasattr(parsed_type, "expressions") and parsed_type.expressions:
+            for field in parsed_type.expressions:
+                if isinstance(field, exp.ColumnDef):
+                    field_name = (
+                        field.this.name
+                        if hasattr(field.this, "name")
+                        else str(field.this)
+                    )
+                    field_type = str(field.kind) if field.kind else "unknown"
+                    fields[field_name] = field_type
+
+        return fields
+
+    def get_array_element_type(
+        self, column_name: str, dialect: str = "snowflake"
+    ) -> Optional[str]:
+        """Get the element type of an array column."""
+        parsed_type = self.get_parsed_column_type(column_name, dialect)
+        if not parsed_type or not self.is_array_column(column_name, dialect):
+            return None
+
+        if hasattr(parsed_type, "expressions") and parsed_type.expressions:
+            element_type = parsed_type.expressions[0]
+            return str(element_type)
+
+        return None
+
+    def validate_column_access(
+        self, column_path: str, dialect: str = "snowflake"
+    ) -> bool:
+        """Validate if a column path is valid based on type information."""
+        parts = column_path.split(".")
+        if not parts:
+            return False
+
+        base_column = parts[0]
+        if base_column not in self.columns:
+            return False
+
+        # If it's just a simple column reference, it's valid
+        if len(parts) == 1:
+            return True
+
+        # For nested access, validate the base column type
+        if self.is_struct_column(base_column, dialect):
+            # For struct columns, we can validate field access
+            struct_fields = self.get_struct_fields(base_column, dialect)
+            if len(parts) == 2 and parts[1] in struct_fields:
+                return True
+            # For deeper nesting, we'd need more sophisticated validation
+            # For now, assume it's valid if the base is a struct
+            return True
+
+        elif self.is_array_column(base_column, dialect):
+            # For array columns, allow indexing or unnesting operations
+            return True
+
+        elif self.is_json_column(base_column, dialect):
+            # For JSON columns, allow path access
+            return True
+
+        # If we reach here, it's likely an invalid access pattern
+        return False
 
 
 class DBTNodeCatalog:
