@@ -238,3 +238,156 @@ def test_nested_struct_column_lineage(temp_nested_manifest_catalog):
         "column": "id",
         "dbt_node": "source.test.users",
     } in id_parents
+
+
+@pytest.fixture()
+def temp_deeply_nested_manifest_catalog(tmp_path: Path):
+    """Create temporary manifest and catalog files with deeply nested struct columns (4+ levels)."""
+    # Build manifest with deeply nested struct access
+    manifest = {
+        "nodes": {
+            "model.test.deep_model": {
+                "resource_type": "model",
+                "path": "models/deep_model.sql",
+                "compiled_code": (
+                    "SELECT "
+                    "company.departments.engineering.teams.backend.lead AS backend_lead, "
+                    "company.departments.marketing.budget.q1.allocated AS q1_budget, "
+                    "company.metadata.created.timestamp.utc AS created_utc, "
+                    "id "
+                    "FROM `my_project.my_dataset.organizations`"
+                ),
+                "depends_on": {"nodes": ["source.test.organizations"]},
+            }
+        },
+        "sources": {
+            "source.test.organizations": {
+                "database": "my_project",
+                "schema": "my_dataset",
+                "name": "organizations",
+                "resource_type": "source",
+            }
+        },
+        "parent_map": {"model.test.deep_model": ["source.test.organizations"]},
+        "child_map": {"source.test.organizations": ["model.test.deep_model"]},
+    }
+
+    catalog = {
+        "nodes": {
+            "model.test.deep_model": {
+                "metadata": {
+                    "database": "my_project",
+                    "schema": "my_dataset",
+                    "name": "deep_model",
+                },
+                "columns": {
+                    "BACKEND_LEAD": {
+                        "type": "STRING",
+                        "index": 1,
+                        "name": "BACKEND_LEAD",
+                    },
+                    "Q1_BUDGET": {"type": "FLOAT64", "index": 2, "name": "Q1_BUDGET"},
+                    "CREATED_UTC": {
+                        "type": "TIMESTAMP",
+                        "index": 3,
+                        "name": "CREATED_UTC",
+                    },
+                    "ID": {"type": "INT64", "index": 4, "name": "ID"},
+                },
+            }
+        },
+        "sources": {
+            "source.test.organizations": {
+                "metadata": {
+                    "database": "my_project",
+                    "schema": "my_dataset",
+                    "name": "organizations",
+                },
+                "columns": {
+                    "COMPANY": {
+                        "type": (
+                            "STRUCT<"
+                            "departments STRUCT<"
+                            "engineering STRUCT<"
+                            "teams STRUCT<"
+                            "backend STRUCT<lead STRING, size INT64>, "
+                            "frontend STRUCT<lead STRING, size INT64>"
+                            ">"
+                            ">, "
+                            "marketing STRUCT<"
+                            "budget STRUCT<"
+                            "q1 STRUCT<allocated FLOAT64, spent FLOAT64>, "
+                            "q2 STRUCT<allocated FLOAT64, spent FLOAT64>"
+                            ">"
+                            ">"
+                            ">, "
+                            "metadata STRUCT<"
+                            "created STRUCT<"
+                            "timestamp STRUCT<utc TIMESTAMP, local TIMESTAMP>"
+                            ">"
+                            ">"
+                            ">"
+                        ),
+                        "index": 1,
+                        "name": "COMPANY",
+                    },
+                    "ID": {"type": "INT64", "index": 2, "name": "ID"},
+                },
+            }
+        },
+    }
+
+    manifest_path = tmp_path / "manifest.json"
+    catalog_path = tmp_path / "catalog.json"
+
+    manifest_path.write_text(json.dumps(manifest))
+    catalog_path.write_text(json.dumps(catalog))
+
+    return str(manifest_path), str(catalog_path)
+
+
+def test_deeply_nested_struct_column_lineage(temp_deeply_nested_manifest_catalog):
+    """Test lineage tracking for deeply nested struct fields (4+ levels deep)."""
+    manifest_path, catalog_path = temp_deeply_nested_manifest_catalog
+
+    extractor = DbtColumnLineageExtractor(
+        manifest_path=manifest_path,
+        catalog_path=catalog_path,
+        selected_models=["model.test.deep_model"],
+        dialect="bigquery",
+    )
+
+    lineage_map = extractor.build_lineage_map()
+    lineage_to_parents = extractor.get_columns_lineage_from_sqlglot_lineage_map(
+        lineage_map
+    )
+
+    model_lineage = lineage_to_parents["model.test.deep_model"]
+
+    # Test 5-level deep nested struct: company.departments.engineering.teams.backend.lead
+    backend_lead_parents = model_lineage["backend_lead"]
+    assert {
+        "column": "company.departments.engineering.teams.backend.lead",
+        "dbt_node": "source.test.organizations",
+    } in backend_lead_parents
+
+    # Test 5-level deep nested struct: company.departments.marketing.budget.q1.allocated
+    q1_budget_parents = model_lineage["q1_budget"]
+    assert {
+        "column": "company.departments.marketing.budget.q1.allocated",
+        "dbt_node": "source.test.organizations",
+    } in q1_budget_parents
+
+    # Test 4-level deep nested struct: company.metadata.created.timestamp.utc
+    created_utc_parents = model_lineage["created_utc"]
+    assert {
+        "column": "company.metadata.created.timestamp.utc",
+        "dbt_node": "source.test.organizations",
+    } in created_utc_parents
+
+    # Test regular column access: id
+    id_parents = model_lineage["id"]
+    assert {
+        "column": "id",
+        "dbt_node": "source.test.organizations",
+    } in id_parents
