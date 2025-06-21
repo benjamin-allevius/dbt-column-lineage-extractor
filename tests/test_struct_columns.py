@@ -391,3 +391,154 @@ def test_deeply_nested_struct_column_lineage(temp_deeply_nested_manifest_catalog
         "column": "id",
         "dbt_node": "source.test.organizations",
     } in id_parents
+
+
+@pytest.fixture()
+def temp_complex_struct_manifest_catalog(tmp_path: Path):
+    """Create manifest and catalog files with complex struct expressions and joins."""
+    # Build manifest with complex struct creation from joined tables
+    manifest = {
+        "nodes": {
+            "model.test.complex_struct_model": {
+                "resource_type": "model",
+                "path": "models/complex_struct_model.sql",
+                "compiled_code": (
+                    "SELECT "
+                    "a.id, "
+                    "STRUCT(a.x + b.y AS from_both, a.x AS from_left, b.y AS from_right) AS mystruct "
+                    "FROM `my_project.my_dataset.table_a` AS a "
+                    "LEFT JOIN `my_project.my_other_dataset.table_b` AS b USING (id)"
+                ),
+                "depends_on": {"nodes": ["source.test.table_a", "source.test.table_b"]},
+            }
+        },
+        "sources": {
+            "source.test.table_a": {
+                "database": "my_project",
+                "schema": "my_dataset",
+                "name": "table_a",
+                "resource_type": "source",
+            },
+            "source.test.table_b": {
+                "database": "my_project",
+                "schema": "my_other_dataset",
+                "name": "table_b",
+                "resource_type": "source",
+            },
+        },
+        "parent_map": {
+            "model.test.complex_struct_model": [
+                "source.test.table_a",
+                "source.test.table_b",
+            ]
+        },
+        "child_map": {
+            "source.test.table_a": ["model.test.complex_struct_model"],
+            "source.test.table_b": ["model.test.complex_struct_model"],
+        },
+    }
+
+    catalog = {
+        "nodes": {
+            "model.test.complex_struct_model": {
+                "metadata": {
+                    "database": "my_project",
+                    "schema": "my_dataset",
+                    "name": "complex_struct_model",
+                },
+                "columns": {
+                    "ID": {"type": "INT64", "index": 1, "name": "ID"},
+                    "MYSTRUCT": {
+                        "type": (
+                            "STRUCT<from_both INT64, from_left INT64, from_right INT64>"
+                        ),
+                        "index": 2,
+                        "name": "MYSTRUCT",
+                    },
+                },
+            }
+        },
+        "sources": {
+            "source.test.table_a": {
+                "metadata": {
+                    "database": "my_project",
+                    "schema": "my_dataset",
+                    "name": "table_a",
+                },
+                "columns": {
+                    "ID": {"type": "INT64", "index": 1, "name": "ID"},
+                    "X": {"type": "INT64", "index": 2, "name": "X"},
+                },
+            },
+            "source.test.table_b": {
+                "metadata": {
+                    "database": "my_project",
+                    "schema": "my_other_dataset",
+                    "name": "table_b",
+                },
+                "columns": {
+                    "ID": {"type": "INT64", "index": 1, "name": "ID"},
+                    "Y": {"type": "INT64", "index": 2, "name": "Y"},
+                },
+            },
+        },
+    }
+
+    manifest_path = tmp_path / "manifest.json"
+    catalog_path = tmp_path / "catalog.json"
+
+    manifest_path.write_text(json.dumps(manifest))
+    catalog_path.write_text(json.dumps(catalog))
+
+    return str(manifest_path), str(catalog_path)
+
+
+def test_complex_struct_expression_lineage(temp_complex_struct_manifest_catalog):
+    """Test lineage tracking for structs with complex expressions and joins."""
+    manifest_path, catalog_path = temp_complex_struct_manifest_catalog
+
+    extractor = DbtColumnLineageExtractor(
+        manifest_path=manifest_path,
+        catalog_path=catalog_path,
+        selected_models=["model.test.complex_struct_model"],
+        dialect="bigquery",
+    )
+
+    lineage_map = extractor.build_lineage_map()
+    lineage_to_parents = extractor.get_columns_lineage_from_sqlglot_lineage_map(
+        lineage_map
+    )
+
+    model_lineage = lineage_to_parents["model.test.complex_struct_model"]
+
+    # Test regular column: id should come from table_a (and potentially table_b due to join)
+    id_parents = model_lineage["id"]
+    assert {
+        "column": "id",
+        "dbt_node": "source.test.table_a",
+    } in id_parents
+
+    # Test the struct column itself: mystruct should have lineage to both source columns
+    # This tests that complex expressions within struct constructors are properly tracked
+    mystruct_parents = model_lineage["mystruct"]
+
+    # The struct should have lineage to both x from table_a and y from table_b
+    # since it contains expressions that reference both columns
+    assert {
+        "column": "x",
+        "dbt_node": "source.test.table_a",
+    } in mystruct_parents
+    assert {
+        "column": "y",
+        "dbt_node": "source.test.table_b",
+    } in mystruct_parents
+
+    # Verify we have exactly the expected lineage (no extra dependencies)
+    expected_parents = {
+        ("x", "source.test.table_a"),
+        ("y", "source.test.table_b"),
+    }
+    actual_parents = {
+        (parent["column"], parent["dbt_node"]) for parent in mystruct_parents
+    }
+    assert actual_parents == expected_parents
