@@ -646,3 +646,58 @@ def test_non_model_resource_handling():
 
                 # Verify that the non-model resource was skipped
                 assert lineage_map == {}
+
+
+@patch("src.dbt_column_lineage_extractor.extractor.sqlglot.parse_one")
+def test_sql_parsing_optimization(mock_parse_one):
+    """Test that SQL is parsed only once per model for both column detection and lineage extraction."""
+    from sqlglot import exp
+
+    # Create a mock parsed SQL object
+    mock_parsed_sql = MagicMock()
+    mock_parsed_sql.select.expressions.expressions = [
+        MagicMock(spec=exp.Alias, alias_or_name="customer_id"),
+        MagicMock(spec=exp.Alias, alias_or_name="first_name"),
+    ]
+
+    # Mock parse_one to return our mock object
+    mock_parse_one.return_value = mock_parsed_sql
+
+    # Create extractor
+    extractor = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+    )
+
+    # Test SQL and inputs
+    model_sql = "SELECT id as customer_id, name as first_name FROM customers"
+    schema = {
+        "test_db": {"test_schema": {"customers": {"id": "int", "name": "string"}}}
+    }
+    model_node = "model.test.test_model"
+
+    # Call the method (it should parse SQL once and use it for both column extraction and lineage)
+    with patch("src.dbt_column_lineage_extractor.extractor.lineage") as mock_lineage:
+        # Mock lineage to return a simple result
+        mock_lineage.return_value = MagicMock()
+
+        extractor._extract_lineage_for_model(
+            model_sql=model_sql,
+            schema=schema,
+            model_node=model_node,
+            selected_columns=[],  # Empty to force column detection
+        )
+
+    # Verify that sqlglot.parse_one was called exactly once
+    mock_parse_one.assert_called_once_with(model_sql, dialect="snowflake")
+
+    # Verify that lineage function was called with the parsed AST, not the raw SQL string
+    assert mock_lineage.call_count == 2  # Once for each column
+
+    # Check that lineage was called with the parsed AST object
+    for call in mock_lineage.call_args_list:
+        args, kwargs = call
+        # The second argument should be the parsed AST object, not a string
+        assert args[1] is mock_parsed_sql
+        assert not isinstance(args[1], str)

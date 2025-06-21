@@ -508,23 +508,32 @@ class DbtColumnLineageExtractor:
     ):
         lineage_map = {}
 
-        # Get columns if none provided
+        # Parse SQL once and reuse the parsed AST
+        try:
+            parsed_sql = sqlglot.parse_one(model_sql, dialect=self.dialect)
+        except Exception as e:
+            warnings.warn(f"Error parsing SQL for model {model_node}: {str(e)}")
+            return {}
+
+        # Get columns if none provided using the already parsed SQL
         if not selected_columns:
             try:
-                sql = sqlglot.parse_one(model_sql, dialect=self.dialect)
                 selected_columns = [
                     column.alias_or_name.lower()
-                    for column in sql.select.expressions.expressions
+                    for column in parsed_sql.select.expressions.expressions
                     if isinstance(column, (exp.Column, exp.Alias))
                 ]
             except Exception as e:
-                warnings.warn(f"Error parsing SQL for model {model_node}: {str(e)}")
+                warnings.warn(
+                    f"Error extracting columns from parsed SQL for model {model_node}: {str(e)}"
+                )
                 return {}
 
         for column_name in selected_columns:
             try:
+                # Pass the already parsed AST to lineage function instead of raw SQL string
                 lineage_node = lineage(
-                    column_name, model_sql, schema=schema, dialect=self.dialect
+                    column_name, parsed_sql, schema=schema, dialect=self.dialect
                 )
                 lineage_map[column_name] = lineage_node
             except SqlglotError as e:
