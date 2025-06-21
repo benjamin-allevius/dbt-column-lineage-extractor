@@ -10,7 +10,7 @@ readme = "readme.md"
 requires-python = ">=3.12"
 authors = [
     { name = "Wen Wu", email = "wenwu@canva.com" },
-    { name = "Benjamin Allévius", email = benjamin.allevius@shopify.com" }
+    { name = "Benjamin Allévius", email = "benjamin.allevius@shopify.com" }
 ]
 dependencies = [
     "sqlglot[rs]>=26.29.0",
@@ -32,4 +32,5 @@ where = ["src"]
 [dependency-groups]
 dev = [
     "pytest>=8.4.1",
+    "ruff>=0.12.0",
 ]
