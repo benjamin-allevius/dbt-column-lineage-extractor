@@ -24,6 +24,10 @@ class DbtColumnLineageExtractor:
         self.parent_map = self.manifest.get("parent_map", {})
         self.child_map = self.manifest.get("child_map", {})
 
+        # Initialize schema caching - cache individual node schemas for efficient lookup
+        self._node_schema_cache = {}
+        self._initialize_node_schema_cache()
+
         # Process selected models
         self.selected_models = []
 
@@ -37,6 +41,92 @@ class DbtColumnLineageExtractor:
         else:
             # Process selectors to get models
             self.selected_models = self._parse_selectors(selected_models)
+
+    def _initialize_node_schema_cache(self):
+        """
+        Pre-compute and cache schema information for all nodes in the catalog.
+        This allows efficient lookup of schema info for specific nodes without
+        regenerating the full schema dict each time.
+        """
+        self.logger.info("Initializing node schema cache...")
+
+        def cache_node_schema(node, node_id):
+            try:
+                dbt_node = DBTNodeCatalog(node)
+                db_name, schema_name, table_name = (
+                    dbt_node.database,
+                    dbt_node.schema,
+                    dbt_node.name,
+                )
+
+                # Create the schema structure for this specific node
+                node_schema = {
+                    db_name: {schema_name: {table_name: dbt_node.get_column_types()}}
+                }
+
+                # Cache by node_id for fast lookup
+                self._node_schema_cache[node_id] = node_schema
+
+            except Exception as e:
+                warnings.warn(f"Error caching schema for node {node_id}: {e}")
+                self._node_schema_cache[node_id] = {}
+
+        # Cache schemas for all nodes
+        for node_id, node in self.catalog.get("nodes", {}).items():
+            cache_node_schema(node, node_id)
+
+        # Cache schemas for all sources
+        for node_id, node in self.catalog.get("sources", {}).items():
+            cache_node_schema(node, node_id)
+
+        self.logger.info(
+            f"Cached schema information for {len(self._node_schema_cache)} nodes"
+        )
+
+    def _get_schema_for_parent_nodes(self, parent_node_ids):
+        """
+        Efficiently get schema dict for a specific set of parent nodes using the cache.
+
+        Args:
+            parent_node_ids: List of parent node IDs to get schema for
+
+        Returns:
+            dict: Schema dictionary containing only the specified parent nodes
+        """
+        combined_schema = {}
+        cache_hits = 0
+        cache_misses = 0
+
+        for node_id in parent_node_ids:
+            if node_id in self._node_schema_cache:
+                node_schema = self._node_schema_cache[node_id]
+                cache_hits += 1
+
+                # Merge this node's schema into the combined schema
+                for db_name, db_schemas in node_schema.items():
+                    if db_name not in combined_schema:
+                        combined_schema[db_name] = {}
+
+                    for schema_name, schema_tables in db_schemas.items():
+                        if schema_name not in combined_schema[db_name]:
+                            combined_schema[db_name][schema_name] = {}
+
+                        for table_name, table_columns in schema_tables.items():
+                            combined_schema[db_name][schema_name][table_name] = (
+                                table_columns
+                            )
+            else:
+                cache_misses += 1
+                warnings.warn(f"Node {node_id} not found in schema cache")
+
+        # Log cache performance for debugging
+        if cache_hits + cache_misses > 0:
+            cache_hit_rate = cache_hits / (cache_hits + cache_misses) * 100
+            self.logger.debug(
+                f"Schema cache hit rate: {cache_hit_rate:.1f}% ({cache_hits}/{cache_hits + cache_misses})"
+            )
+
+        return combined_schema
 
     def _parse_selectors(self, selectors):
         """
@@ -331,6 +421,13 @@ class DbtColumnLineageExtractor:
         return descendants
 
     def _generate_schema_dict_from_catalog(self, catalog=None):
+        """
+        Generate schema dictionary from catalog.
+
+        Note: This method is still used for the full catalog during initialization,
+        but for individual model processing, use _get_schema_for_parent_nodes() which
+        uses caching for better performance.
+        """
         if not catalog:
             catalog = self.catalog
         schema_dict = {}
@@ -450,7 +547,6 @@ class DbtColumnLineageExtractor:
         error_count = 0
 
         for model_node, model_info in self.manifest["nodes"].items():
-
             if self.selected_models and model_node not in self.selected_models:
                 continue
 
@@ -477,9 +573,10 @@ class DbtColumnLineageExtractor:
                     )
                     continue
 
-                parent_catalog = self._get_parent_nodes_catalog(model_info)
+                # Get parent node IDs directly from manifest instead of creating catalog subset
+                parent_node_ids = model_info["depends_on"]["nodes"]
                 columns = self._get_list_of_columns_for_a_dbt_node(model_node)
-                schema = self._generate_schema_dict_from_catalog(parent_catalog)
+                schema = self._get_schema_for_parent_nodes(parent_node_ids)
                 model_sql = model_info["compiled_code"]
 
                 model_lineage = self._extract_lineage_for_model(
