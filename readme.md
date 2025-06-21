@@ -95,7 +95,7 @@ Example Mermaid visualization:
 ![mermaid_example](images/mermaid_example.png)
 
 
-### 2. JSON-based 
+### 2. JSON-based
 The tool also outputs structured JSON that can be used for programmatic integration, data impact analysis, etc.
 
 Example JSON structure for `model.jaffle_shop.stg_orders -- order_id`
@@ -131,3 +131,7 @@ Example JSON structure for `model.jaffle_shop.stg_orders -- order_id`
 - Doesn't support parse certain syntax, e.g. lateral flatten
 - Doesn't support dbt python models
 - Only tested with `snowflake` dialect so far
+
+## Development
+
+If you are a developer who wants to work in this repo, see readme_development.md.
