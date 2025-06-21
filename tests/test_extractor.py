@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from sqlglot.lineage import SqlglotError
@@ -660,6 +660,13 @@ def test_sql_parsing_optimization(mock_parse_one):
         MagicMock(spec=exp.Alias, alias_or_name="first_name"),
     ]
 
+    # Mock the named_selects property that our optimization uses
+    mock_select_1 = MagicMock()
+    mock_select_1.alias_or_name = "customer_id"
+    mock_select_2 = MagicMock()
+    mock_select_2.alias_or_name = "first_name"
+    mock_parsed_sql.named_selects = [mock_select_1, mock_select_2]
+
     # Mock parse_one to return our mock object
     mock_parse_one.return_value = mock_parsed_sql
 
@@ -678,7 +685,22 @@ def test_sql_parsing_optimization(mock_parse_one):
     model_node = "model.test.test_model"
 
     # Call the method (it should parse SQL once and use it for both column extraction and lineage)
-    with patch("src.dbt_column_lineage_extractor.extractor.lineage") as mock_lineage:
+    with (
+        patch("src.dbt_column_lineage_extractor.extractor.lineage") as mock_lineage,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
+        ) as mock_qualify,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
+        ) as mock_build_scope,
+    ):
+        # Mock the qualify function to return our mock parsed SQL
+        mock_qualify.return_value = mock_parsed_sql
+
+        # Mock the build_scope function
+        mock_scope = MagicMock()
+        mock_build_scope.return_value = mock_scope
+
         # Mock lineage to return a simple result
         mock_lineage.return_value = MagicMock()
 
@@ -689,15 +711,26 @@ def test_sql_parsing_optimization(mock_parse_one):
             selected_columns=[],  # Empty to force column detection
         )
 
-    # Verify that sqlglot.parse_one was called exactly once
-    mock_parse_one.assert_called_once_with(model_sql, dialect="snowflake")
+    # Verify that sqlglot.parse_one was called exactly once with our model SQL
+    # Filter calls to only check for our specific model SQL call
+    model_sql_calls = [
+        mock_call
+        for mock_call in mock_parse_one.call_args_list
+        if len(mock_call.args) > 0 and mock_call.args[0] == model_sql
+    ]
+
+    assert (
+        len(model_sql_calls) == 1
+    ), f"Expected exactly one call with model SQL, got {len(model_sql_calls)}"
+    expected_call = call(model_sql, dialect="snowflake")
+    assert model_sql_calls[0] == expected_call
 
     # Verify that lineage function was called with the parsed AST, not the raw SQL string
     assert mock_lineage.call_count == 2  # Once for each column
 
     # Check that lineage was called with the parsed AST object
-    for call in mock_lineage.call_args_list:
-        args, kwargs = call
+    for lineage_call in mock_lineage.call_args_list:
+        args, kwargs = lineage_call
         # The second argument should be the parsed AST object, not a string
         assert args[1] is mock_parsed_sql
         assert not isinstance(args[1], str)

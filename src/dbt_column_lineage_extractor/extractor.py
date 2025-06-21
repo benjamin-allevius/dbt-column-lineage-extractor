@@ -3,6 +3,8 @@ from typing import Dict, Optional
 
 import sqlglot
 from sqlglot.lineage import SqlglotError, exp, lineage
+from sqlglot.optimizer.qualify import qualify as _sqlglot_qualify  # type: ignore
+from sqlglot.optimizer.scope import build_scope as _sqlglot_build_scope  # type: ignore
 
 from . import utils
 
@@ -99,32 +101,36 @@ class DbtColumnLineageExtractor:
         cache_misses = 0
 
         for node_id in parent_node_ids:
-            if node_id in self._node_schema_cache:
-                node_schema = self._node_schema_cache[node_id]
-                cache_hits += 1
-
-                # Merge this node's schema into the combined schema
-                for db_name, db_schemas in node_schema.items():
-                    if db_name not in combined_schema:
-                        combined_schema[db_name] = {}
-
-                    for schema_name, schema_tables in db_schemas.items():
-                        if schema_name not in combined_schema[db_name]:
-                            combined_schema[db_name][schema_name] = {}
-
-                        for table_name, table_columns in schema_tables.items():
-                            combined_schema[db_name][schema_name][table_name] = (
-                                table_columns
-                            )
-            else:
+            node_schema = self._node_schema_cache.get(node_id)
+            if not node_schema:
                 cache_misses += 1
                 warnings.warn(f"Node {node_id} not found in schema cache")
+                continue
 
-        # Log cache performance for debugging
-        if cache_hits + cache_misses > 0:
-            cache_hit_rate = cache_hits / (cache_hits + cache_misses) * 100
+            cache_hits += 1
+
+            # Instead of deep-copying every level, reference existing nested dicts where possible.
+            for db_name, db_schemas in node_schema.items():
+                # If we haven't encountered this database yet, we can reuse the whole sub-dict.
+                if db_name not in combined_schema:
+                    combined_schema[db_name] = db_schemas
+                    continue
+
+                dest_db = combined_schema[db_name]
+                for schema_name, schema_tables in db_schemas.items():
+                    if schema_name not in dest_db:
+                        dest_db[schema_name] = schema_tables
+                        continue
+
+                    dest_schema = dest_db[schema_name]
+                    # Only add tables that are missing – no column-level copying required.
+                    for table_name, table_columns in schema_tables.items():
+                        dest_schema.setdefault(table_name, table_columns)
+
+        if cache_hits + cache_misses:
+            hit_rate = cache_hits / (cache_hits + cache_misses) * 100
             self.logger.debug(
-                f"Schema cache hit rate: {cache_hit_rate:.1f}% ({cache_hits}/{cache_hits + cache_misses})"
+                f"Schema cache hit rate: {hit_rate:.1f}% ({cache_hits}/{cache_hits + cache_misses})"
             )
 
         return combined_schema
@@ -505,48 +511,64 @@ class DbtColumnLineageExtractor:
         return parent_catalog
 
     def _extract_lineage_for_model(
-        self, model_sql, schema, model_node, selected_columns=[]
+        self, model_sql, schema, model_node, selected_columns=None
     ):
-        lineage_map = {}
+        """Return a mapping of column → lineage Node for the given model.
 
-        # Parse SQL once and reuse the parsed AST
+        The heavy‐weight qualification and scope building is executed *once* and
+        reused for every column, drastically reducing computation compared to the
+        previous per-column re-qualification strategy.
+        """
+
+        if selected_columns is None:
+            selected_columns = []
+
+        lineage_map: Dict[str, list] = {}
+
+        # 1️⃣ Parse SQL once
         try:
             parsed_sql = sqlglot.parse_one(model_sql, dialect=self.dialect)
         except Exception as e:
-            warnings.warn(f"Error parsing SQL for model {model_node}: {str(e)}")
+            warnings.warn(f"Error parsing SQL for model {model_node}: {e}")
             return {}
 
-        # Get columns if none provided using the already parsed SQL
+        # 2️⃣ Qualify identifiers and build scope once
+        try:
+            qualified_expr = _sqlglot_qualify(
+                parsed_sql,
+                dialect=self.dialect,
+                schema=schema,
+                validate_qualify_columns=False,
+                identify=False,
+            )
+            scope = _sqlglot_build_scope(qualified_expr)
+        except Exception as e:
+            warnings.warn(f"Error qualifying SQL for model {model_node}: {e}")
+            return {}
+
+        # 3️⃣ Determine columns to compute lineage for
         if not selected_columns:
             try:
                 selected_columns = [
-                    column.alias_or_name.lower()
-                    for column in parsed_sql.select.expressions.expressions
-                    if isinstance(column, (exp.Column, exp.Alias))
+                    s.alias_or_name.lower() for s in qualified_expr.named_selects
                 ]
             except Exception as e:
-                warnings.warn(
-                    f"Error extracting columns from parsed SQL for model {model_node}: {str(e)}"
-                )
+                warnings.warn(f"Error retrieving select columns for {model_node}: {e}")
                 return {}
 
-        for column_name in selected_columns:
+        # 4️⃣ Build lineage per column but reusing scope/expr (fast)
+        for col in selected_columns:
             try:
-                # Pass the already parsed AST to lineage function instead of raw SQL string
-                lineage_node = lineage(
-                    column_name, parsed_sql, schema=schema, dialect=self.dialect
-                )
-                lineage_map[column_name] = lineage_node
+                node = lineage(col, qualified_expr, dialect=self.dialect, scope=scope)
+                lineage_map[col.lower()] = node
             except SqlglotError as e:
-                self.logger.error(
-                    f"Error processing model {model_node}, column {column_name}: {e}"
-                )
-                lineage_map[column_name] = []
+                self.logger.error(f"Error processing {model_node}.{col}: {e}")
+                lineage_map[col.lower()] = []
             except Exception as e:
                 self.logger.error(
-                    f"Unexpected error processing model {model_node}, column {column_name}: {e}"
+                    f"Unexpected error processing {model_node}.{col}: {e}"
                 )
-                lineage_map[column_name] = []
+                lineage_map[col.lower()] = []
 
         return lineage_map
 
