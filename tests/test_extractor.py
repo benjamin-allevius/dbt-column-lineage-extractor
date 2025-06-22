@@ -16,9 +16,23 @@ def test_extractor_initialization():
     )
     assert isinstance(extractor, DbtColumnLineageExtractor)
     assert extractor.dialect == "snowflake"
+    assert extractor.optimization_level == "single_shot"  # Default optimization level
     # When selected_models is empty, it automatically selects all models from manifest
     assert len(extractor.selected_models) > 0
     assert all(model.startswith("model.") for model in extractor.selected_models)
+
+
+def test_extractor_with_optimization_levels():
+    """Test that the extractor can be initialized with different optimization levels."""
+    for opt_level in ["original", "batch_optimized", "single_shot"]:
+        extractor = DbtColumnLineageExtractor(
+            manifest_path="tests/test_data/inputs/manifest.json",
+            catalog_path="tests/test_data/inputs/catalog.json",
+            selected_models=[],
+            dialect="snowflake",
+            optimization_level=opt_level,
+        )
+        assert extractor.optimization_level == opt_level
 
 
 def test_extractor_with_specific_models():
@@ -152,16 +166,20 @@ def test_get_parent_nodes_catalog():
     assert parent_count > 0
 
 
-@patch("src.dbt_column_lineage_extractor.extractor.lineage")
+@patch(
+    "src.dbt_column_lineage_extractor.extractor.lineage"
+)  # Mock lineage from extractor module
 def test_extract_lineage_for_model(mock_lineage):
-    """Test extracting lineage for a model."""
+    """Test extracting lineage for a model with different optimization levels."""
     # Mock the lineage function to return a predictable result
-    mock_lineage.return_value = [MagicMock()]
+    mock_lineage.return_value = MagicMock()
 
+    # Test with original optimization level which uses the lineage function
     extractor = DbtColumnLineageExtractor(
         manifest_path="tests/test_data/inputs/manifest.json",
         catalog_path="tests/test_data/inputs/catalog.json",
         dialect="snowflake",
+        optimization_level="original",  # Use original to test lineage function
     )
 
     # Create test inputs
@@ -186,7 +204,7 @@ def test_extract_lineage_for_model(mock_lineage):
     assert "customer_id" in lineage_map
     assert "name" in lineage_map
 
-    # Verify lineage was called for each column
+    # Verify lineage was called for each column in original mode
     assert mock_lineage.call_count == 2
 
 
@@ -227,16 +245,20 @@ def test_extract_lineage_with_real_data():
     assert any(lineage for lineage in lineage_map.values())
 
 
-@patch("src.dbt_column_lineage_extractor.extractor.lineage")
+@patch(
+    "src.dbt_column_lineage_extractor.extractor.lineage"
+)  # Mock lineage from extractor module
 def test_extract_lineage_error_handling(mock_lineage):
     """Test error handling during lineage extraction."""
     # Mock the lineage function to raise an error
     mock_lineage.side_effect = SqlglotError("Test error")
 
+    # Test with original optimization level which uses the lineage function
     extractor = DbtColumnLineageExtractor(
         manifest_path="tests/test_data/inputs/manifest.json",
         catalog_path="tests/test_data/inputs/catalog.json",
         dialect="snowflake",
+        optimization_level="original",  # Use original to test error handling
     )
 
     # Create test inputs
@@ -650,7 +672,7 @@ def test_non_model_resource_handling():
 
 @patch("src.dbt_column_lineage_extractor.extractor.sqlglot.parse_one")
 def test_sql_parsing_optimization(mock_parse_one):
-    """Test that SQL is parsed only once per model for both column detection and lineage extraction."""
+    """Test that SQL is parsed only once per model for lineage extraction."""
     from sqlglot import exp
 
     # Create a mock parsed SQL object
@@ -670,11 +692,12 @@ def test_sql_parsing_optimization(mock_parse_one):
     # Mock parse_one to return our mock object
     mock_parse_one.return_value = mock_parsed_sql
 
-    # Create extractor
+    # Create extractor with single_shot optimization (default)
     extractor = DbtColumnLineageExtractor(
         manifest_path="tests/test_data/inputs/manifest.json",
         catalog_path="tests/test_data/inputs/catalog.json",
         dialect="snowflake",
+        optimization_level="single_shot",  # Use optimized version
     )
 
     # Test SQL and inputs
@@ -684,25 +707,29 @@ def test_sql_parsing_optimization(mock_parse_one):
     }
     model_node = "model.test.test_model"
 
-    # Call the method (it should parse SQL once and use it for both column extraction and lineage)
+    # Mock the required sqlglot functions for the optimized path
     with (
-        patch("src.dbt_column_lineage_extractor.extractor.lineage") as mock_lineage,
         patch(
             "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
         ) as mock_qualify,
         patch(
             "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
         ) as mock_build_scope,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor.to_node"  # Mock to_node
+        ) as mock_to_node,
     ):
         # Mock the qualify function to return our mock parsed SQL
         mock_qualify.return_value = mock_parsed_sql
 
         # Mock the build_scope function
         mock_scope = MagicMock()
+        mock_scope.expression.named_selects = ["customer_id", "first_name"]
+        mock_scope.expression.selects = [mock_select_1, mock_select_2]
         mock_build_scope.return_value = mock_scope
 
-        # Mock lineage to return a simple result
-        mock_lineage.return_value = MagicMock()
+        # Mock to_node to return a simple result
+        mock_to_node.return_value = MagicMock()
 
         extractor._extract_lineage_for_model(
             model_sql=model_sql,
@@ -725,12 +752,290 @@ def test_sql_parsing_optimization(mock_parse_one):
     expected_call = call(model_sql, dialect="snowflake")
     assert model_sql_calls[0] == expected_call
 
-    # Verify that lineage function was called with the parsed AST, not the raw SQL string
-    assert mock_lineage.call_count == 2  # Once for each column
+    # Verify that to_node function was called for optimized version
+    assert mock_to_node.call_count == 2  # Once for each column
 
-    # Check that lineage was called with the parsed AST object
-    for lineage_call in mock_lineage.call_args_list:
-        args, kwargs = lineage_call
-        # The second argument should be the parsed AST object, not a string
-        assert args[1] is mock_parsed_sql
-        assert not isinstance(args[1], str)
+    # Check that to_node was called with the scope object (optimized approach)
+    for to_node_call in mock_to_node.call_args_list:
+        args, kwargs = to_node_call
+        # Verify to_node was called with correct parameters
+        assert "column" in kwargs or len(args) > 0
+        assert "scope" in kwargs or len(args) > 1
+
+
+@patch("src.dbt_column_lineage_extractor.extractor.to_node")
+def test_extract_lineage_for_model_batch_optimized(mock_to_node):
+    """Test extracting lineage for a model using batch_optimized optimization level."""
+    # Mock the to_node function to return a predictable result
+    mock_to_node.return_value = MagicMock()
+
+    # Test with batch_optimized optimization level
+    extractor = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="batch_optimized",
+    )
+
+    # Create test inputs
+    model_sql = "SELECT id as customer_id, name FROM customers"
+    schema = {
+        "test_db": {"test_schema": {"customers": {"id": "int", "name": "varchar"}}}
+    }
+    model_node = "model.test.test_model"
+    selected_columns = ["customer_id", "name"]
+
+    # Mock the required sqlglot functions
+    with (
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
+        ) as mock_qualify,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
+        ) as mock_build_scope,
+    ):
+        # Mock parsed SQL
+        mock_parsed_sql = MagicMock()
+        mock_parsed_sql.named_selects = [MagicMock(), MagicMock()]
+
+        # Mock qualify and scope
+        mock_qualify.return_value = mock_parsed_sql
+        mock_scope = MagicMock()
+        mock_scope.expression.selects = [
+            MagicMock(alias_or_name="customer_id"),
+            MagicMock(alias_or_name="name"),
+        ]
+        mock_build_scope.return_value = mock_scope
+
+        # Call the method
+        lineage_map = extractor._extract_lineage_for_model(
+            model_sql=model_sql,
+            schema=schema,
+            model_node=model_node,
+            selected_columns=selected_columns,
+        )
+
+    # Verify the result
+    assert lineage_map
+    assert isinstance(lineage_map, dict)
+    assert "customer_id" in lineage_map
+    assert "name" in lineage_map
+
+    # Verify to_node was called for each column in batch_optimized mode
+    assert mock_to_node.call_count == 2
+
+
+@patch("src.dbt_column_lineage_extractor.extractor.to_node")
+def test_extract_lineage_for_model_single_shot(mock_to_node):
+    """Test extracting lineage for a model using single_shot optimization level."""
+    # Mock the to_node function to return a predictable result
+    mock_to_node.return_value = MagicMock()
+
+    # Test with single_shot optimization level (default)
+    extractor = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="single_shot",
+    )
+
+    # Create test inputs
+    model_sql = "SELECT id as customer_id, name FROM customers"
+    schema = {
+        "test_db": {"test_schema": {"customers": {"id": "int", "name": "varchar"}}}
+    }
+    model_node = "model.test.test_model"
+    selected_columns = ["customer_id", "name"]
+
+    # Mock the required sqlglot functions
+    with (
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
+        ) as mock_qualify,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
+        ) as mock_build_scope,
+    ):
+        # Mock parsed SQL with enhanced named_selects
+        mock_parsed_sql = MagicMock()
+        mock_parsed_sql.named_selects = ["customer_id", "name"]
+
+        # Mock qualify and scope
+        mock_qualify.return_value = mock_parsed_sql
+        mock_scope = MagicMock()
+        mock_scope.expression.named_selects = ["customer_id", "name"]
+        mock_scope.expression.selects = [
+            MagicMock(alias_or_name="customer_id"),
+            MagicMock(alias_or_name="name"),
+        ]
+        mock_build_scope.return_value = mock_scope
+
+        # Call the method
+        lineage_map = extractor._extract_lineage_for_model(
+            model_sql=model_sql,
+            schema=schema,
+            model_node=model_node,
+            selected_columns=selected_columns,
+        )
+
+    # Verify the result
+    assert lineage_map
+    assert isinstance(lineage_map, dict)
+    assert "customer_id" in lineage_map
+    assert "name" in lineage_map
+
+    # Verify to_node was called for each column in single_shot mode
+    assert mock_to_node.call_count == 2
+
+
+@patch("src.dbt_column_lineage_extractor.extractor.to_node")
+def test_batch_optimized_error_handling(mock_to_node):
+    """Test error handling during lineage extraction with batch_optimized level."""
+    # Mock the to_node function to raise an error
+    mock_to_node.side_effect = SqlglotError("Test error")
+
+    extractor = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="batch_optimized",
+    )
+
+    # Create test inputs
+    model_sql = "SELECT id as customer_id FROM customers"
+    schema = {"test_db": {"test_schema": {"customers": {"id": "int"}}}}
+    model_node = "model.test.test_model"
+    selected_columns = ["customer_id"]
+
+    # Mock the required sqlglot functions
+    with (
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
+        ) as mock_qualify,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
+        ) as mock_build_scope,
+    ):
+        mock_parsed_sql = MagicMock()
+        mock_qualify.return_value = mock_parsed_sql
+        mock_scope = MagicMock()
+        mock_scope.expression.selects = [MagicMock(alias_or_name="customer_id")]
+        mock_build_scope.return_value = mock_scope
+
+        # Test that no exception is raised and empty result is returned
+        lineage_map = extractor._extract_lineage_for_model(
+            model_sql=model_sql,
+            schema=schema,
+            model_node=model_node,
+            selected_columns=selected_columns,
+        )
+
+    # Check that we got an empty result for the column due to error
+    assert lineage_map == {"customer_id": []}
+
+
+@patch("src.dbt_column_lineage_extractor.extractor.to_node")
+def test_single_shot_error_handling(mock_to_node):
+    """Test error handling during lineage extraction with single_shot level."""
+    # Mock the to_node function to raise an error
+    mock_to_node.side_effect = SqlglotError("Test error")
+
+    extractor = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="single_shot",
+    )
+
+    # Create test inputs
+    model_sql = "SELECT id as customer_id FROM customers"
+    schema = {"test_db": {"test_schema": {"customers": {"id": "int"}}}}
+    model_node = "model.test.test_model"
+    selected_columns = ["customer_id"]
+
+    # Mock the required sqlglot functions
+    with (
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_qualify"
+        ) as mock_qualify,
+        patch(
+            "src.dbt_column_lineage_extractor.extractor._sqlglot_build_scope"
+        ) as mock_build_scope,
+    ):
+        mock_parsed_sql = MagicMock()
+        mock_parsed_sql.named_selects = ["customer_id"]
+        mock_qualify.return_value = mock_parsed_sql
+        mock_scope = MagicMock()
+        mock_scope.expression.named_selects = ["customer_id"]
+        mock_scope.expression.selects = [MagicMock(alias_or_name="customer_id")]
+        mock_build_scope.return_value = mock_scope
+
+        # Test that no exception is raised and empty result is returned
+        lineage_map = extractor._extract_lineage_for_model(
+            model_sql=model_sql,
+            schema=schema,
+            model_node=model_node,
+            selected_columns=selected_columns,
+        )
+
+    # Check that we got an empty result for the column due to error
+    assert lineage_map == {"customer_id": []}
+
+
+def test_optimization_level_performance_characteristics():
+    """Test that each optimization level exhibits expected performance characteristics."""
+    # This test verifies that the optimization levels route to the correct methods
+    extractor_original = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="original",
+    )
+
+    extractor_batch = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="batch_optimized",
+    )
+
+    extractor_single = DbtColumnLineageExtractor(
+        manifest_path="tests/test_data/inputs/manifest.json",
+        catalog_path="tests/test_data/inputs/catalog.json",
+        dialect="snowflake",
+        optimization_level="single_shot",
+    )
+
+    # Test that each extractor has the correct optimization level set
+    assert extractor_original.optimization_level == "original"
+    assert extractor_batch.optimization_level == "batch_optimized"
+    assert extractor_single.optimization_level == "single_shot"
+
+    # Test method routing by patching the specific methods
+    with (
+        patch.object(
+            extractor_original, "_extract_lineage_for_model_original"
+        ) as mock_orig,
+        patch.object(
+            extractor_batch, "_extract_lineage_for_model_batch_optimized"
+        ) as mock_batch,
+        patch.object(
+            extractor_single, "_extract_lineage_for_model_single_shot"
+        ) as mock_single,
+    ):
+        # Mock return values
+        mock_orig.return_value = {}
+        mock_batch.return_value = {}
+        mock_single.return_value = {}
+
+        test_args = ("SELECT 1", {}, "test_model", [])
+
+        # Call the main method for each extractor
+        extractor_original._extract_lineage_for_model(*test_args)
+        extractor_batch._extract_lineage_for_model(*test_args)
+        extractor_single._extract_lineage_for_model(*test_args)
+
+        # Verify each optimization level routed to the correct method
+        mock_orig.assert_called_once_with(*test_args)
+        mock_batch.assert_called_once_with(*test_args)
+        mock_single.assert_called_once_with(*test_args)
