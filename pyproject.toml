@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbt-column-lineage-extractor"
-version = "0.2.1"
+version = "0.2.2"
 description = "A package for extracting dbt column lineage"
 readme = "readme.md"
 requires-python = ">=3.12"
@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 dbt_column_lineage_direct = "dbt_column_lineage_extractor.cli_direct:main"
 dbt_column_lineage_recursive = "dbt_column_lineage_extractor.cli_recursive:main"
+dbt_column_lineage_root_sources = "dbt_column_lineage_extractor.cli_root_sources:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
