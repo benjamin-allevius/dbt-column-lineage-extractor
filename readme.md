@@ -21,9 +21,90 @@ The DBT Column Lineage Extractor is a lightweight Python-based tool for extracti
 
 
 ## Installation
-### pip installation
+
+To install, run the following command:
+
+```bash
+pip install dbt-column-lineage-extractor
 ```
-pip install dbt-column-lineage-extractor==0.1.7b2
+
+## Usage
+
+This package provides three CLI commands:
+
+### 1. Direct Lineage Extraction (`dbt_column_lineage_direct`)
+
+Extract lineage for all models or a specific set of models:
+
+```bash
+# Extract lineage for all models
+dbt_column_lineage_direct --manifest path/to/manifest.json --catalog path/to/catalog.json
+
+# Extract lineage for specific models using dbt-style selectors
+dbt_column_lineage_direct --manifest path/to/manifest.json --catalog path/to/catalog.json --model customers orders
+dbt_column_lineage_direct --model +customers  # customers and all its upstream models
+dbt_column_lineage_direct --model customers+  # customers and all its downstream models
+dbt_column_lineage_direct --model tag:finance  # all models tagged with 'finance'
+dbt_column_lineage_direct --model path:marts/finance  # all models in the marts/finance path
+```
+
+### 2. Recursive Lineage Analysis (`dbt_column_lineage_recursive`)
+
+Trace the complete lineage (ancestors and descendants) for a specific model and column:
+
+```bash
+# Find all ancestors and descendants of orders.order_id
+dbt_column_lineage_recursive --model orders --column order_id
+
+# Use with existing lineage files
+dbt_column_lineage_recursive --model orders --column order_id --lineage-parents-file ./outputs/lineage_to_direct_parents.json --lineage-children-file ./outputs/lineage_to_direct_children.json
+
+# Output in different formats
+dbt_column_lineage_recursive --model orders --column order_id --output-format mermaid
+dbt_column_lineage_recursive --model orders --column order_id --output-format json
+```
+
+### 3. Root Sources Analysis (`dbt_column_lineage_root_sources`)
+
+Find all root source models and columns that contribute to specified target models:
+
+```bash
+# Find root sources for all models (default behavior)
+dbt_column_lineage_root_sources --manifest path/to/manifest.json --catalog path/to/catalog.json
+
+# Find root sources for specific target models
+dbt_column_lineage_root_sources --manifest path/to/manifest.json --catalog path/to/catalog.json --model customers orders
+
+# Use dbt-style selectors for target models
+dbt_column_lineage_root_sources --model tag:critical  # root sources for all models tagged 'critical'
+dbt_column_lineage_root_sources --model path:marts/finance  # root sources for finance mart models
+
+# Use existing lineage data (faster)
+dbt_column_lineage_root_sources --lineage-parents-file ./outputs/lineage_to_direct_parents.json --model customers
+
+# Output formats
+dbt_column_lineage_root_sources --model customers --output-format summary  # console summary only
+dbt_column_lineage_root_sources --model customers --output-format json     # JSON file only
+dbt_column_lineage_root_sources --model customers --output-format both     # both (default)
+```
+
+## Command Workflow
+
+The typical workflow is:
+
+1. **Extract Direct Lineage**: Use `dbt_column_lineage_direct` to generate the base lineage files
+2. **Analyze Specific Columns**: Use `dbt_column_lineage_recursive` to trace specific column lineage
+3. **Find Root Sources**: Use `dbt_column_lineage_root_sources` to identify the ultimate upstream sources
+
+```bash
+# Step 1: Generate base lineage (run once or when models change)
+dbt_column_lineage_direct --manifest ./inputs/manifest.json --catalog ./inputs/catalog.json
+
+# Step 2: Analyze specific column lineage
+dbt_column_lineage_recursive --model customers --column customer_id
+
+# Step 3: Find root sources for specific models
+dbt_column_lineage_root_sources --lineage-parents-file ./outputs/lineage_to_direct_parents.json --model customers orders
 ```
 
 ## Required Input Files
