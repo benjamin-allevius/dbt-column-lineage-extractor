@@ -9,6 +9,95 @@ from sqlglot.optimizer.scope import build_scope as _sqlglot_build_scope  # type:
 from . import utils
 
 
+def _extract_struct_field_lineage(
+    column_name: str, scope, dialect: str
+) -> Optional[list]:
+    """
+    Extract lineage for struct fields (e.g., 'mystruct.from_left').
+
+    This handles BigQuery's PropertyEQ expressions in STRUCT definitions.
+
+    Args:
+        column_name: Full column name like 'mystruct.from_left'
+        scope: SQLGlot scope object
+        dialect: SQL dialect (should be 'bigquery')
+
+    Returns:
+        Lineage node or None if not found
+    """
+    # Check if this looks like a struct field access
+    if "." not in column_name:
+        return None
+
+    parts = column_name.split(".", 1)
+    if len(parts) != 2:
+        return None
+
+    struct_name, field_name = parts
+
+    # Find the struct column in the select expressions
+    struct_select = None
+    for select in scope.expression.selects:
+        if select.alias_or_name == struct_name:
+            struct_select = select
+            break
+
+    if not struct_select:
+        return None
+
+    # Get the actual struct expression (might be wrapped in Alias)
+    struct_expr = (
+        struct_select.this if isinstance(struct_select, exp.Alias) else struct_select
+    )
+
+    # Check if it's a STRUCT expression
+    if not isinstance(struct_expr, exp.Struct):
+        return None
+
+    # Look for the specific field in the struct's PropertyEQ expressions
+    for struct_field in struct_expr.expressions:
+        if isinstance(struct_field, exp.PropertyEQ):
+            # PropertyEQ.this is the field name, PropertyEQ.expression is the value
+            if struct_field.this.name.lower() == field_name.lower():
+                # Found the field! Now extract lineage from its expression
+                # Create a mock select expression to use SQLGlot lineage properly
+                mock_select = exp.Select(
+                    expressions=[exp.alias_(struct_field.expression, field_name)]
+                )
+
+                # Create a mock scope with this select and the same sources as the original
+                mock_scope = type(
+                    "MockScope",
+                    (),
+                    {
+                        "expression": mock_select,
+                        "sources": scope.sources,
+                        "subquery_scopes": scope.subquery_scopes,
+                        "derived_tables": scope.derived_tables,
+                        "pivots": scope.pivots,
+                    },
+                )()
+
+                try:
+                    # Now use to_node on this mock scope
+                    return to_node(
+                        column=field_name,
+                        scope=mock_scope,
+                        dialect=dialect,
+                        trim_selects=True,
+                    )
+                except Exception:
+                    # If that fails, try to extract columns directly from the expression
+                    columns = []
+                    for col in struct_field.expression.find_all(exp.Column):
+                        table_name = col.table if col.table else ""
+                        column_name = col.name if col.name else str(col.this)
+                        columns.append({"table": table_name, "column": column_name})
+                    return columns
+
+    return None
+
+
 class DbtColumnLineageExtractor:
     def __init__(
         self,
@@ -303,12 +392,10 @@ class DbtColumnLineageExtractor:
                 matching_nodes = self._resolve_node_by_name(selector_expr)
                 expanded_models.update(matching_nodes)
 
-            # exclude sources after expansion
-            expanded_models = [
-                x for x in expanded_models if not x.startswith("source.")
-            ]
+        # exclude sources after expansion
+        expanded_models = [x for x in expanded_models if not x.startswith("source.")]
 
-        return list(expanded_models)
+        return expanded_models
 
     def _resolve_node_by_name(self, node_name):
         """Find nodes matching a name without full node path prefixes"""
@@ -512,6 +599,57 @@ class DbtColumnLineageExtractor:
             return []
         return [col.lower() for col in list(columns.keys())]
 
+    def _expand_struct_fields_in_columns(self, selected_columns, model_node):
+        """
+        Expand struct columns into their constituent field columns for BigQuery.
+
+        This method takes a list of column names and expands any struct columns
+        into their individual field columns (e.g., mystruct -> mystruct.field1, mystruct.field2).
+
+        Args:
+            selected_columns: List of column names detected from SQL
+            model_node: The dbt model node to get catalog information from
+
+        Returns:
+            List of column names with struct fields expanded
+        """
+        try:
+            # Get catalog information for the model
+            catalog_data = None
+            if model_node in self.catalog["nodes"]:
+                catalog_data = self.catalog["nodes"][model_node]
+            elif model_node in self.catalog["sources"]:
+                catalog_data = self.catalog["sources"][model_node]
+
+            if not catalog_data:
+                return selected_columns
+
+            # Create Enhanced catalog object to use struct parsing methods
+            enhanced_catalog = EnhancedDBTNodeCatalog(catalog_data)
+
+            expanded_columns = []
+            for col in selected_columns:
+                # Add the original column
+                expanded_columns.append(col)
+
+                # Check if this is a struct column and expand it
+                is_struct = enhanced_catalog.is_struct_column(col.upper(), self.dialect)
+
+                if is_struct:
+                    struct_fields = enhanced_catalog.get_struct_fields(
+                        col.upper(), self.dialect
+                    )
+                    for field_name in struct_fields.keys():
+                        # Add the struct field column (e.g., mystruct.field1)
+                        field_column = f"{col}.{field_name.lower()}"
+                        expanded_columns.append(field_column)
+
+            return expanded_columns
+
+        except Exception as e:
+            self.logger.warning(f"Error expanding struct fields for {model_node}: {e}")
+            return selected_columns
+
     def _get_parent_nodes_catalog(self, model_info):
         parent_nodes = model_info["depends_on"]["nodes"]
         parent_catalog = {"nodes": {}, "sources": {}}
@@ -636,6 +774,12 @@ class DbtColumnLineageExtractor:
                     self.logger.error(f"Error detecting columns for {model_node}: {e}")
                     return {}
 
+        # 🔄 NEW: Expand struct fields for BigQuery dialect (always run, regardless of column source)
+        if self.dialect == "bigquery":
+            selected_columns = self._expand_struct_fields_in_columns(
+                selected_columns, model_node
+            )
+
         # 4️⃣ Single-shot batch lineage extraction with optimized error handling
         successful_extractions = 0
 
@@ -643,6 +787,19 @@ class DbtColumnLineageExtractor:
             try:
                 # Pre-validate column exists to avoid unnecessary work
                 col_lower = col.lower()
+
+                # Check if this is a struct field access (contains dot)
+                if "." in col_lower and self.dialect == "bigquery":
+                    # Try to extract struct field lineage
+                    struct_lineage = _extract_struct_field_lineage(
+                        col_lower, scope, self.dialect
+                    )
+                    if struct_lineage is not None:
+                        lineage_map[col_lower] = struct_lineage
+                        successful_extractions += 1
+                        continue
+
+                # Regular column validation
                 if not any(
                     select.alias_or_name.lower() == col_lower
                     for select in scope.expression.selects
@@ -919,7 +1076,8 @@ class DbtColumnLineageExtractor:
                     continue
                 if model_info["resource_type"] != "model":
                     self.logger.info(
-                        f"Skipping column lineage detection for {model_node} as it's not a model but a {model_info['resource_type']}"
+                        f"Skipping column lineage detection for {model_node} "
+                        f"as it's not a model but a {model_info['resource_type']}"
                     )
                     continue
 

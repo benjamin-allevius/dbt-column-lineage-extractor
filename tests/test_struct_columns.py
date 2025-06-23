@@ -518,27 +518,33 @@ def test_complex_struct_expression_lineage(temp_complex_struct_manifest_catalog)
         "dbt_node": "source.test.table_a",
     } in id_parents
 
-    # Test the struct column itself: mystruct should have lineage to both source columns
-    # This tests that complex expressions within struct constructors are properly tracked
-    mystruct_parents = model_lineage["mystruct"]
+    # Test granular lineage for fields within the struct.
+    # This is currently aspirational and not supported by the extractor.
 
-    # The struct should have lineage to both x from table_a and y from table_b
-    # since it contains expressions that reference both columns
+    # `mystruct.from_left` should have lineage to `x` from `table_a`
+    from_left_parents = model_lineage["mystruct.from_left"]
+    assert len(from_left_parents) == 1
     assert {
         "column": "x",
         "dbt_node": "source.test.table_a",
-    } in mystruct_parents
+    } in from_left_parents
+
+    # `mystruct.from_right` should have lineage to `y` from `table_b`
+    from_right_parents = model_lineage["mystruct.from_right"]
+    assert len(from_right_parents) == 1
     assert {
         "column": "y",
         "dbt_node": "source.test.table_b",
-    } in mystruct_parents
+    } in from_right_parents
 
-    # Verify we have exactly the expected lineage (no extra dependencies)
-    expected_parents = {
-        ("x", "source.test.table_a"),
-        ("y", "source.test.table_b"),
-    }
-    actual_parents = {
-        (parent["column"], parent["dbt_node"]) for parent in mystruct_parents
-    }
-    assert actual_parents == expected_parents
+    # `mystruct.from_both` should have lineage to both `x` from `table_a` and `y` from `table_b`
+    from_both_parents = model_lineage["mystruct.from_both"]
+    assert len(from_both_parents) == 2
+    assert {
+        "column": "x",
+        "dbt_node": "source.test.table_a",
+    } in from_both_parents
+    assert {
+        "column": "y",
+        "dbt_node": "source.test.table_b",
+    } in from_both_parents
