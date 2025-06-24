@@ -7,7 +7,7 @@ from .extractor import DbtColumnLineageExtractor
 
 
 def extract_root_sources_for_models(
-    lineage_to_direct_parents, target_models, manifest_data=None
+    lineage_to_direct_parents, target_models, manifest_data=None, catalog_data=None
 ):
     """
     Extract root source models and their contributing columns for specific target models.
@@ -16,6 +16,7 @@ def extract_root_sources_for_models(
         lineage_to_direct_parents: Dictionary containing lineage to direct parents data
         target_models: List of target model node IDs to find root sources for
         manifest_data: Optional manifest data to identify skipped models
+        catalog_data: Optional catalog data to get actual columns for target models
 
     Returns:
         tuple: (root_sources dict, affected_columns dict, skipped_models list)
@@ -44,6 +45,26 @@ def extract_root_sources_for_models(
     # Group columns by root source model, but only for specified target models
     root_sources = defaultdict(set)
     affected_columns = defaultdict(set)
+
+    # Helper function to get actual columns for a model from catalog
+    def get_actual_columns_for_model(model_node):
+        """Get the actual columns that exist in a model according to the catalog."""
+        if not catalog_data:
+            return None
+
+        # Check nodes first, then sources
+        if model_node in catalog_data.get("nodes", {}):
+            return [
+                col.lower()
+                for col in catalog_data["nodes"][model_node]["columns"].keys()
+            ]
+        elif model_node in catalog_data.get("sources", {}):
+            return [
+                col.lower()
+                for col in catalog_data["sources"][model_node]["columns"].keys()
+            ]
+        else:
+            return None
 
     # Find which columns from root sources contribute to the specified target models
     # We need to trace recursively through the lineage to find all paths
@@ -76,14 +97,26 @@ def extract_root_sources_for_models(
                 # Continue tracing upstream
                 find_contributing_sources(parent_model, parent_column, visited)
 
-    # Start tracing from all columns in the target models
-    for model_col_key in lineage_to_direct_parents.keys():
-        # Extract model name (everything except the last part which is the column)
-        parts = model_col_key.split(".")
-        model_name = ".".join(parts[:-1])
-        column_name = parts[-1]
-        if model_name in target_models:
-            find_contributing_sources(model_name, column_name)
+    # Start tracing from actual columns in the target models (if catalog available)
+    # or fall back to columns in lineage data
+    for target_model in target_models:
+        actual_columns = get_actual_columns_for_model(target_model)
+
+        if actual_columns:
+            # Use actual columns from catalog
+            for column_name in actual_columns:
+                model_col_key = f"{target_model}.{column_name}"
+                if model_col_key in lineage_to_direct_parents:
+                    find_contributing_sources(target_model, column_name)
+        else:
+            # Fall back to columns from lineage data for this target model
+            for model_col_key in lineage_to_direct_parents.keys():
+                # Extract model name (everything except the last part which is the column)
+                parts = model_col_key.split(".")
+                model_name = ".".join(parts[:-1])
+                column_name = parts[-1]
+                if model_name == target_model:
+                    find_contributing_sources(model_name, column_name)
 
     # Convert sets to sorted lists for JSON serialization
     root_sources_result = {}
@@ -294,7 +327,10 @@ def main():
         # Extract root sources
         root_sources, affected_columns, skipped_models = (
             extract_root_sources_for_models(
-                lineage_to_direct_parents, target_models, manifest_data
+                lineage_to_direct_parents,
+                target_models,
+                manifest_data,
+                extractor.catalog,
             )
         )
 

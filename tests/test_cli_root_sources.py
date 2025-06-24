@@ -159,6 +159,88 @@ class TestExtractRootSourcesForModels:
         # In this case, both models appear in lineage, so no root sources should be found
         assert len(root_sources) == 0
 
+    def test_catalog_based_column_filtering(self):
+        """Test that root source extraction only traces from actual columns in target models"""
+        # Example scenario: target model m5 has columns c1_m5, c2_m5
+        # but lineage data might contain additional columns that don't exist in the actual model
+        # This test ensures we only trace from actual columns according to catalog
+
+        # Lineage data with extra columns that might not exist in the actual model
+        lineage_data = {
+            "m5.c1_m5": [
+                {"model": "m4", "column": "c1_m4"},
+                {"model": "m4", "column": "c2_m4"},
+            ],
+            "m5.c2_m5": [{"model": "m4", "column": "c2_m4"}],
+            "m5.c3_m5_nonexistent": [  # This column doesn't exist in actual model
+                {"model": "m4", "column": "c3_m4"}
+            ],
+            "m4.c1_m4": [{"model": "m1", "column": "c1_m1"}],
+            "m4.c2_m4": [{"model": "m3", "column": "c1_m3"}],
+            "m4.c3_m4": [  # This should not be traced since source column doesn't exist
+                {"model": "m2", "column": "c2_m2"}
+            ],
+            "m3.c1_m3": [{"model": "m2", "column": "c1_m2"}],
+        }
+
+        # Catalog data with actual columns
+        catalog_data = {
+            "nodes": {
+                "m5": {
+                    "columns": {
+                        "c1_m5": {"type": "VARCHAR"},
+                        "c2_m5": {"type": "VARCHAR"},
+                        # Note: c3_m5_nonexistent is NOT in the actual catalog
+                    }
+                },
+                "m4": {
+                    "columns": {
+                        "c1_m4": {"type": "VARCHAR"},
+                        "c2_m4": {"type": "VARCHAR"},
+                        "c3_m4": {"type": "VARCHAR"},
+                    }
+                },
+                "m3": {"columns": {"c1_m3": {"type": "VARCHAR"}}},
+                "m2": {
+                    "columns": {
+                        "c1_m2": {"type": "VARCHAR"},
+                        "c2_m2": {"type": "VARCHAR"},
+                    }
+                },
+                "m1": {"columns": {"c1_m1": {"type": "VARCHAR"}}},
+            }
+        }
+
+        target_models = ["m5"]
+
+        # Test with catalog data - should only trace from actual columns
+        root_sources, affected_columns, skipped_models = (
+            extract_root_sources_for_models(
+                lineage_data, target_models, None, catalog_data
+            )
+        )
+
+        # Should only get root sources from tracing c1_m5 and c2_m5 (actual columns)
+        # c1_m5 -> c1_m4 -> c1_m1 (from m1)
+        # c2_m5 -> c2_m4 -> c1_m3 -> c1_m2 (from m2)
+        # Should NOT get c2_m2 from m2 (since c3_m5_nonexistent doesn't exist)
+        expected_root_sources = {"m1": ["c1_m1"], "m2": ["c1_m2"]}
+
+        expected_affected_columns = {"m5": ["c1_m5", "c2_m5"]}
+
+        assert root_sources == expected_root_sources
+        assert affected_columns == expected_affected_columns
+
+        # Test without catalog data - should trace from all columns in lineage
+        root_sources_no_catalog, affected_columns_no_catalog, _ = (
+            extract_root_sources_for_models(lineage_data, target_models, None, None)
+        )
+
+        # Without catalog filtering, should include c2_m2 from the nonexistent column trace
+        assert "m2" in root_sources_no_catalog
+        assert set(root_sources_no_catalog["m2"]) == {"c1_m2", "c2_m2"}
+        assert "c3_m5_nonexistent" in affected_columns_no_catalog["m5"]
+
 
 class TestCliRootSources:
     """Test the CLI functionality"""
