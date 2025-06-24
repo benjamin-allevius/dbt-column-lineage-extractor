@@ -170,9 +170,11 @@ class TestCliRootSources:
         # Create a test lineage file
         lineage_file = tmp_path / "test_lineage.json"
         lineage_data = {
-            "model.jaffle_shop.customers.customer_id": [
-                {"model": "source.jaffle_shop.raw_customers", "column": "id"}
-            ]
+            "model.jaffle_shop.customers": {
+                "customer_id": [
+                    {"model": "source.jaffle_shop.raw_customers", "column": "id"}
+                ]
+            }
         }
         with open(lineage_file, "w") as f:
             json.dump(lineage_data, f)
@@ -397,12 +399,12 @@ class TestCliRootSources:
         # Create a lineage file with no root sources (all models have parents)
         lineage_file = tmp_path / "no_roots_lineage.json"
         lineage_data = {
-            "model.test.model_a.col1": [
-                {"model": "model.test.model_b", "column": "col1"}
-            ],
-            "model.test.model_b.col1": [
-                {"model": "model.test.model_a", "column": "col1"}
-            ],
+            "model.test.model_a": {
+                "col1": [{"model": "model.test.model_b", "column": "col1"}]
+            },
+            "model.test.model_b": {
+                "col1": [{"model": "model.test.model_a", "column": "col1"}]
+            },
         }
         with open(lineage_file, "w") as f:
             json.dump(lineage_data, f)

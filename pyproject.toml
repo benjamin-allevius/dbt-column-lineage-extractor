@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbt-column-lineage-extractor"
-version = "0.2.2"
+version = "0.2.3"
 description = "A package for extracting dbt column lineage"
 readme = "readme.md"
 requires-python = ">=3.12"

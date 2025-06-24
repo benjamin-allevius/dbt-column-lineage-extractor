@@ -208,9 +208,19 @@ def main():
         if args.lineage_parents_file:
             # Use existing lineage file
             try:
-                lineage_to_direct_parents = utils.read_dict_from_file(
+                lineage_to_direct_parents_raw = utils.read_dict_from_file(
                     args.lineage_parents_file
                 )
+                # Transform from nested format to flattened format
+                lineage_to_direct_parents = {}
+                for (
+                    model_name,
+                    model_columns,
+                ) in lineage_to_direct_parents_raw.items():
+                    for column_name, parents in model_columns.items():
+                        flattened_key = f"{model_name}.{column_name}"
+                        lineage_to_direct_parents[flattened_key] = parents
+
                 logger.info(f"Loaded lineage data from {args.lineage_parents_file}")
             except FileNotFoundError:
                 logger.error(
