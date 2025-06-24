@@ -201,9 +201,21 @@ def main():
                 logger.error(f"Error reading model list from JSON file: {e}")
                 return 1
 
+        # Create extractor to expand model selectors (needed regardless of lineage source)
+        extractor = DbtColumnLineageExtractor(
+            manifest_path=args.manifest,
+            catalog_path=args.catalog,
+            selected_models=target_models,
+            dialect=args.dialect,
+        )
+        target_models = extractor.selected_models
+        logger.info(
+            f"Processing {len(target_models)} target models after selector expansion"
+        )
+
         # Get lineage data - either from existing file or generate it
         lineage_to_direct_parents = None
-        manifest_data = None
+        manifest_data = extractor.manifest
 
         if args.lineage_parents_file:
             # Use existing lineage file
@@ -231,16 +243,9 @@ def main():
                 )
                 return 1
         else:
-            # Generate lineage data
+            # Generate lineage data using the same extractor
             logger.info("Generating lineage data from manifest and catalog...")
             try:
-                extractor = DbtColumnLineageExtractor(
-                    manifest_path=args.manifest,
-                    catalog_path=args.catalog,
-                    selected_models=[],  # Process all models for complete lineage
-                    dialect=args.dialect,
-                )
-
                 lineage_map = extractor.build_lineage_map()
                 if not lineage_map:
                     logger.warning(
@@ -262,7 +267,6 @@ def main():
                         # Create flattened key: "model_name.column_name"
                         flattened_key = f"{model_name}.{column_name}"
                         lineage_to_direct_parents[flattened_key] = parents
-                manifest_data = extractor.manifest
 
                 logger.info("Lineage data generated successfully")
 
@@ -285,18 +289,6 @@ def main():
             logger.info(
                 f"No target models specified, processing all {len(target_models)} models "
                 f"from lineage data"
-            )
-        else:
-            # Use DbtColumnLineageExtractor to expand selectors for target models
-            temp_extractor = DbtColumnLineageExtractor(
-                manifest_path=args.manifest,
-                catalog_path=args.catalog,
-                selected_models=target_models,
-                dialect=args.dialect,
-            )
-            target_models = temp_extractor.selected_models
-            logger.info(
-                f"Processing {len(target_models)} target models after selector expansion"
             )
 
         # Extract root sources
